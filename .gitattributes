@@ -1,0 +1,24 @@
+# Normalize line endings for all files that Git considers text files.
+* text=auto eol=lf
+
+# Explicitly declare text files to be normalized and diffed properly
+*.gd text
+*.tscn text
+*.tres text
+*.cfg text
+*.godot text
+*.gdshader text
+*.import text
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.svg text
+*.ogg binary
+*.wav binary
+*.mp3 binary
+*.glb binary
+*.gltf text
+*.fbx binary
