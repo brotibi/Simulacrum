@@ -1,0 +1,243 @@
+{
+	"ambient_color": [
+		0.18,
+		0.19,
+		0.21
+	],
+	"ambient_energy": 0.65,
+	"ceiling_material": {
+		"affine_amount": 1.0,
+		"albedo_color": [
+			0.3,
+			0.29,
+			0.28,
+			1.0
+		],
+		"custom_texture_path": "",
+		"snap_resolution": [
+			213.0,
+			120.0
+		],
+		"texture_mode": "procedural_concrete",
+		"uv_offset": [
+			0.0,
+			0.0
+		],
+		"uv_scale": [
+			6.0,
+			8.0
+		],
+		"vertex_darkening_end": 18.0,
+		"vertex_darkening_start": 4.0,
+		"vertex_snap_enabled": true
+	},
+	"dimensions": [
+		12.0,
+		4.0,
+		24.0
+	],
+	"floor_material": {
+		"affine_amount": 1.0,
+		"albedo_color": [
+			0.38,
+			0.36,
+			0.34,
+			1.0
+		],
+		"custom_texture_path": "",
+		"snap_resolution": [
+			213.0,
+			120.0
+		],
+		"texture_mode": "procedural_tiles",
+		"uv_offset": [
+			0.0,
+			0.0
+		],
+		"uv_scale": [
+			8.0,
+			12.0
+		],
+		"vertex_darkening_end": 18.0,
+		"vertex_darkening_start": 4.0,
+		"vertex_snap_enabled": true
+	},
+	"fog_color": [
+		0.14,
+		0.15,
+		0.16
+	],
+	"fog_density": 0.14,
+	"fog_enabled": true,
+	"has_ceiling": true,
+	"items": [
+		{
+			"instance_name": "Pillar_NW",
+			"object_name": "bloodstained_pillar",
+			"position": [
+				-2.5,
+				0.0,
+				-5.0
+			],
+			"rotation": [
+				0.0,
+				0.0,
+				0.0
+			],
+			"scale": [
+				1.0,
+				1.0,
+				1.0
+			]
+		},
+		{
+			"instance_name": "Pillar_NE",
+			"object_name": "bloodstained_pillar",
+			"position": [
+				2.5,
+				0.0,
+				-5.0
+			],
+			"rotation": [
+				0.0,
+				0.0,
+				0.0
+			],
+			"scale": [
+				1.0,
+				1.0,
+				1.0
+			]
+		},
+		{
+			"instance_name": "Pillar_SW",
+			"object_name": "bloodstained_pillar",
+			"position": [
+				-2.5,
+				0.0,
+				3.0
+			],
+			"rotation": [
+				0.0,
+				0.0,
+				0.0
+			],
+			"scale": [
+				1.0,
+				1.0,
+				1.0
+			]
+		},
+		{
+			"instance_name": "Pillar_SE",
+			"object_name": "bloodstained_pillar",
+			"position": [
+				2.5,
+				0.0,
+				3.0
+			],
+			"rotation": [
+				0.0,
+				0.0,
+				0.0
+			],
+			"scale": [
+				1.0,
+				1.0,
+				1.0
+			]
+		},
+		{
+			"instance_name": "Crate_1",
+			"object_name": "rusty_crate",
+			"position": [
+				-3.8,
+				0.0,
+				-1.5
+			],
+			"rotation": [
+				0.0,
+				18.0,
+				0.0
+			],
+			"scale": [
+				1.0,
+				1.0,
+				1.0
+			]
+		},
+		{
+			"instance_name": "Drum_1",
+			"object_name": "industrial_drum",
+			"position": [
+				3.6,
+				0.0,
+				-2.0
+			],
+			"rotation": [
+				0.0,
+				0.0,
+				0.0
+			],
+			"scale": [
+				1.0,
+				1.0,
+				1.0
+			]
+		}
+	],
+	"lights": [
+		{
+			"color": [
+				0.85,
+				0.72,
+				0.52
+			],
+			"energy": 1.0,
+			"name": "CeilingLight_1",
+			"position": [
+				0.0,
+				3.4,
+				0.0
+			],
+			"range": 9.0
+		}
+	],
+	"name": "silent_corridor",
+	"player_spawn": [
+		0.0,
+		0.1,
+		4.0
+	],
+	"subdivide": 6,
+	"wall_east": true,
+	"wall_material": {
+		"affine_amount": 1.0,
+		"albedo_color": [
+			0.46,
+			0.43,
+			0.38,
+			1.0
+		],
+		"custom_texture_path": "",
+		"snap_resolution": [
+			213.0,
+			120.0
+		],
+		"texture_mode": "procedural_concrete",
+		"uv_offset": [
+			0.0,
+			0.0
+		],
+		"uv_scale": [
+			8.0,
+			3.0
+		],
+		"vertex_darkening_end": 18.0,
+		"vertex_darkening_start": 4.0,
+		"vertex_snap_enabled": true
+	},
+	"wall_north": true,
+	"wall_south": true,
+	"wall_west": true
+}

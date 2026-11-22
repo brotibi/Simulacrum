@@ -1,0 +1,74 @@
+{
+	"light": {
+		"color": [
+			0.95,
+			0.8,
+			0.55
+		],
+		"enabled": false,
+		"energy": 1.2,
+		"position": [
+			0.0,
+			1.2,
+			0.0
+		],
+		"range": 6.0,
+		"type": "omni"
+	},
+	"name": "bloodstained_pillar",
+	"parts": [
+		{
+			"collision": true,
+			"material": {
+				"affine_amount": 1.0,
+				"albedo_color": [
+					0.52,
+					0.34,
+					0.28,
+					1.0
+				],
+				"custom_texture_path": "",
+				"snap_resolution": [
+					213.0,
+					120.0
+				],
+				"texture_mode": "procedural_concrete",
+				"uv_offset": [
+					0.0,
+					0.0
+				],
+				"uv_scale": [
+					2.0,
+					4.0
+				],
+				"vertex_darkening_end": 18.0,
+				"vertex_darkening_start": 4.0,
+				"vertex_snap_enabled": true
+			},
+			"model_path": "",
+			"name": "BaseMesh",
+			"position": [
+				0.0,
+				2.0,
+				0.0
+			],
+			"rotation": [
+				0.0,
+				0.0,
+				0.0
+			],
+			"scale": [
+				1.0,
+				1.0,
+				1.0
+			],
+			"shape": "box",
+			"size": [
+				0.9,
+				4.0,
+				0.9
+			],
+			"subdivide": 4
+		}
+	]
+}

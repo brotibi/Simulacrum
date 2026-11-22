@@ -1,0 +1,74 @@
+{
+	"light": {
+		"color": [
+			0.95,
+			0.8,
+			0.55
+		],
+		"enabled": false,
+		"energy": 1.2,
+		"position": [
+			0.0,
+			1.2,
+			0.0
+		],
+		"range": 6.0,
+		"type": "omni"
+	},
+	"name": "industrial_drum",
+	"parts": [
+		{
+			"collision": true,
+			"material": {
+				"affine_amount": 1.0,
+				"albedo_color": [
+					0.45,
+					0.52,
+					0.48,
+					1.0
+				],
+				"custom_texture_path": "",
+				"snap_resolution": [
+					213.0,
+					120.0
+				],
+				"texture_mode": "procedural_rust",
+				"uv_offset": [
+					0.0,
+					0.0
+				],
+				"uv_scale": [
+					2.0,
+					2.0
+				],
+				"vertex_darkening_end": 18.0,
+				"vertex_darkening_start": 4.0,
+				"vertex_snap_enabled": true
+			},
+			"model_path": "",
+			"name": "BaseMesh",
+			"position": [
+				0.0,
+				0.625,
+				0.0
+			],
+			"rotation": [
+				0.0,
+				0.0,
+				0.0
+			],
+			"scale": [
+				1.0,
+				1.0,
+				1.0
+			],
+			"shape": "cylinder",
+			"size": [
+				0.85,
+				1.25,
+				0.85
+			],
+			"subdivide": 2
+		}
+	]
+}
