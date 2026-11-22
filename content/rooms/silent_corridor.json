@@ -170,9 +170,28 @@
 			"instance_name": "Drum_1",
 			"object_name": "industrial_drum",
 			"position": [
-				3.6,
-				0.0,
+				3.5,
+				0.25,
 				-2.0
+			],
+			"rotation": [
+				0.0,
+				0.0,
+				0.0
+			],
+			"scale": [
+				1.0,
+				1.0,
+				1.0
+			]
+		},
+		{
+			"instance_name": "bloodstained_pillar_7",
+			"object_name": "bloodstained_pillar",
+			"position": [
+				2.5,
+				-1.25,
+				0.0
 			],
 			"rotation": [
 				0.0,
@@ -201,6 +220,21 @@
 				0.0
 			],
 			"range": 9.0
+		},
+		{
+			"color": [
+				0.85,
+				0.72,
+				0.52
+			],
+			"energy": 1.0,
+			"name": "Light_2",
+			"position": [
+				0.0,
+				3.2,
+				0.0
+			],
+			"range": 9.0
 		}
 	],
 	"name": "silent_corridor",
@@ -209,7 +243,7 @@
 		0.1,
 		4.0
 	],
-	"subdivide": 6,
+	"subdivide": 6.0,
 	"wall_east": true,
 	"wall_material": {
 		"affine_amount": 1.0,

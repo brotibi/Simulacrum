@@ -36,6 +36,7 @@ var room_surface_target: String = "floor_material" # floor_material, wall_materi
 var _updating_ui: bool = false
 
 # 3D Preview state
+var vp_container: SubViewportContainer
 var preview_subviewport: SubViewport
 var preview_root_3d: Node3D
 var preview_content_holder: Node3D
@@ -43,6 +44,14 @@ var preview_camera: Camera3D
 var preview_key_light: DirectionalLight3D
 var preview_post_rect: ColorRect
 var preview_selection_box: MeshInstance3D
+
+# 3D Translation Vector Arrows Gizmo (X = Red, Y = Green, Z = Blue)
+var gizmo_root: Node3D
+var _gizmo_axis_mats: Dictionary = {}
+var _hovered_gizmo_axis: int = -1 # -1 none, 0 X, 1 Y, 2 Z
+var _dragging_gizmo_axis: int = -1
+var _gizmo_drag_start_pos: Vector3 = Vector3.ZERO
+var _gizmo_drag_start_param: float = 0.0
 
 var _cam_target: Vector3 = Vector3(0.0, 0.8, 0.0)
 var _cam_yaw: float = -0.5
@@ -138,10 +147,13 @@ var rlight_range: SpinBox
 
 
 func _ready() -> void:
-	# Expand window for studio editing while keeping crisp rendering
-	DisplayServer.window_set_size(Vector2i(1440, 860))
-	get_tree().root.content_scale_mode = Window.CONTENT_SCALE_MODE_DISABLED
-	get_tree().root.content_scale_size = Vector2i(1440, 860)
+	# Override project.godot's 426x240 integer viewport scaling so the studio UI gets full window pixels
+	var root_win := get_tree().root
+	root_win.content_scale_mode = Window.CONTENT_SCALE_MODE_DISABLED
+	root_win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_IGNORE
+	root_win.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_FRACTIONAL
+	DisplayServer.window_set_size(Vector2i(1480, 880))
+	root_win.content_scale_size = Vector2i(0, 0)
 
 	SimulacrumBuilder.ensure_starter_presets()
 	object_cfg = SimulacrumBuilder.load_object_json("rusty_crate")
@@ -151,6 +163,8 @@ func _ready() -> void:
 	room_cfg = SimulacrumBuilder.load_room_json("silent_corridor")
 	if room_cfg.is_empty():
 		room_cfg = SimulacrumBuilder.default_room_config("silent_corridor")
+	if not room_cfg.get("items", []).is_empty():
+		selected_item_idx = 0
 
 	_build_ui()
 	_refresh_saved_lists()
@@ -171,10 +185,19 @@ func _build_ui() -> void:
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
 
+	var outer_margin := MarginContainer.new()
+	outer_margin.set_anchors_preset(Control.PRESET_FULL_RECT)
+	outer_margin.add_theme_constant_override("margin_left", 10)
+	outer_margin.add_theme_constant_override("margin_right", 10)
+	outer_margin.add_theme_constant_override("margin_top", 8)
+	outer_margin.add_theme_constant_override("margin_bottom", 8)
+	add_child(outer_margin)
+
 	var main_vbox := VBoxContainer.new()
-	main_vbox.set_anchors_preset(Control.PRESET_FULL_RECT)
+	main_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	main_vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	main_vbox.add_theme_constant_override("separation", 6)
-	add_child(main_vbox)
+	outer_margin.add_child(main_vbox)
 
 	# Top Toolbar
 	var top_bar := PanelContainer.new()
@@ -184,7 +207,7 @@ func _build_ui() -> void:
 	top_bar.add_child(top_hbox)
 
 	var title_lbl := Label.new()
-	title_lbl.text = "  SIMULACRUM STUDIO (PS1 Object & Room Builder)  "
+	title_lbl.text = " SIMULACRUM STUDIO "
 	title_lbl.add_theme_color_override("font_color", Color(0.92, 0.78, 0.55))
 	top_hbox.add_child(title_lbl)
 
@@ -204,7 +227,7 @@ func _build_ui() -> void:
 	top_hbox.add_child(sep)
 
 	var dither_toggle := CheckButton.new()
-	dither_toggle.text = "PS1 15-Bit Dither Preview"
+	dither_toggle.text = "PS1 15-Bit Dither"
 	dither_toggle.button_pressed = true
 	dither_toggle.toggled.connect(func(on: bool):
 		if preview_post_rect != null:
@@ -213,7 +236,7 @@ func _build_ui() -> void:
 	top_hbox.add_child(dither_toggle)
 
 	var turntable_toggle := CheckButton.new()
-	turntable_toggle.text = "Turntable Spin"
+	turntable_toggle.text = "Turntable"
 	turntable_toggle.toggled.connect(func(on: bool): _turntable_enabled = on)
 	top_hbox.add_child(turntable_toggle)
 
@@ -226,31 +249,50 @@ func _build_ui() -> void:
 	status_label.text = "Ready."
 	status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	status_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	status_label.add_theme_color_override("font_color", Color(0.65, 0.85, 0.70))
 	top_hbox.add_child(status_label)
 
 	# Main 3-Column Workspace
 	var body_hbox := HBoxContainer.new()
+	body_hbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	body_hbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	body_hbox.add_theme_constant_override("separation", 8)
+	body_hbox.add_theme_constant_override("separation", 10)
 	main_vbox.add_child(body_hbox)
 
-	# Left Column (Scrollable)
+	# Left Column (Scrollable with interior padding so controls are never clipped)
+	var left_panel_bg := PanelContainer.new()
+	left_panel_bg.custom_minimum_size = Vector2(360, 0)
+	left_panel_bg.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	body_hbox.add_child(left_panel_bg)
+
 	var left_scroll := ScrollContainer.new()
-	left_scroll.custom_minimum_size = Vector2(330, 0)
-	body_hbox.add_child(left_scroll)
+	left_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	left_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	left_panel_bg.add_child(left_scroll)
+
+	var left_margin := MarginContainer.new()
+	left_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_margin.add_theme_constant_override("margin_left", 10)
+	left_margin.add_theme_constant_override("margin_right", 14)
+	left_margin.add_theme_constant_override("margin_top", 8)
+	left_margin.add_theme_constant_override("margin_bottom", 12)
+	left_scroll.add_child(left_margin)
 
 	var left_holder := VBoxContainer.new()
 	left_holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	left_scroll.add_child(left_holder)
+	left_margin.add_child(left_holder)
 
 	left_object_panel = VBoxContainer.new()
 	left_object_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_object_panel.add_theme_constant_override("separation", 6)
 	left_holder.add_child(left_object_panel)
 	_build_left_object_panel()
 
 	left_room_panel = VBoxContainer.new()
 	left_room_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_room_panel.add_theme_constant_override("separation", 6)
 	left_holder.add_child(left_room_panel)
 	_build_left_room_panel()
 
@@ -260,7 +302,7 @@ func _build_ui() -> void:
 	center_vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	body_hbox.add_child(center_vbox)
 
-	var vp_container := SubViewportContainer.new()
+	vp_container = SubViewportContainer.new()
 	vp_container.stretch = true
 	vp_container.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	vp_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -277,26 +319,44 @@ func _build_ui() -> void:
 	_setup_preview_3d_scene()
 
 	var hint_lbl := Label.new()
-	hint_lbl.text = "3D Preview Controls: Left-Drag = Orbit | Right-Drag = Pan | Mouse Wheel = Zoom | Exports to content/*.json and scenes/*.tscn"
-	hint_lbl.add_theme_color_override("font_color", Color(0.62, 0.64, 0.68))
+	hint_lbl.text = "Room Editor: Drag Red(X) / Green(Y) / Blue(Z) Vector Arrows to move item | Left-Click item to select | Left-Drag = Orbit | Right-Drag = Pan | Scroll = Zoom"
+	hint_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint_lbl.add_theme_color_override("font_color", Color(0.68, 0.72, 0.78))
 	center_vbox.add_child(hint_lbl)
 
-	# Right Column (Scrollable Inspector)
+	# Right Column (Scrollable Inspector with interior padding)
+	var right_panel_bg := PanelContainer.new()
+	right_panel_bg.custom_minimum_size = Vector2(360, 0)
+	right_panel_bg.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	body_hbox.add_child(right_panel_bg)
+
 	var right_scroll := ScrollContainer.new()
-	right_scroll.custom_minimum_size = Vector2(360, 0)
-	body_hbox.add_child(right_scroll)
+	right_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	right_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	right_panel_bg.add_child(right_scroll)
+
+	var right_margin := MarginContainer.new()
+	right_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_margin.add_theme_constant_override("margin_left", 10)
+	right_margin.add_theme_constant_override("margin_right", 14)
+	right_margin.add_theme_constant_override("margin_top", 8)
+	right_margin.add_theme_constant_override("margin_bottom", 12)
+	right_scroll.add_child(right_margin)
 
 	var right_holder := VBoxContainer.new()
 	right_holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	right_scroll.add_child(right_holder)
+	right_margin.add_child(right_holder)
 
 	right_object_panel = VBoxContainer.new()
 	right_object_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_object_panel.add_theme_constant_override("separation", 6)
 	right_holder.add_child(right_object_panel)
 	_build_right_object_panel()
 
 	right_room_panel = VBoxContainer.new()
 	right_room_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_room_panel.add_theme_constant_override("separation", 6)
 	right_holder.add_child(right_room_panel)
 	_build_right_room_panel()
 
@@ -342,19 +402,22 @@ func _setup_preview_3d_scene() -> void:
 	preview_content_holder.name = "PreviewContentHolder"
 	preview_root_3d.add_child(preview_content_holder)
 
-	# Wireframe / highlight box for selected room item
+	# Selection highlight box for selected room item
 	preview_selection_box = MeshInstance3D.new()
 	var sel_box := BoxMesh.new()
-	sel_box.size = Vector3(1.2, 1.2, 1.2)
+	sel_box.size = Vector3(1.15, 1.15, 1.15)
 	var sel_mat := StandardMaterial3D.new()
 	sel_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	sel_mat.albedo_color = Color(1.0, 0.85, 0.2, 0.25)
+	sel_mat.albedo_color = Color(1.0, 0.85, 0.2, 0.16)
 	sel_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	sel_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	sel_box.material = sel_mat
 	preview_selection_box.mesh = sel_box
 	preview_selection_box.visible = false
 	preview_root_3d.add_child(preview_selection_box)
+
+	# Build 3D Vector Translation Arrows Gizmo (X = Red, Y = Green, Z = Blue)
+	_build_3d_translation_gizmo()
 
 	# PS1 Post-process inside preview subviewport
 	var post_layer := CanvasLayer.new()
@@ -370,6 +433,196 @@ func _setup_preview_3d_scene() -> void:
 	post_layer.add_child(preview_post_rect)
 
 
+func _build_3d_translation_gizmo() -> void:
+	gizmo_root = Node3D.new()
+	gizmo_root.name = "TranslationGizmo3D"
+	gizmo_root.visible = false
+	preview_root_3d.add_child(gizmo_root)
+
+	# Center origin cube
+	var center_mesh := MeshInstance3D.new()
+	var cbox := BoxMesh.new()
+	cbox.size = Vector3(0.18, 0.18, 0.18)
+	var cmat := StandardMaterial3D.new()
+	cmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	cmat.no_depth_test = true
+	cmat.render_priority = 10
+	cmat.albedo_color = Color(0.95, 0.95, 0.95)
+	cbox.material = cmat
+	center_mesh.mesh = cbox
+	gizmo_root.add_child(center_mesh)
+
+	_create_gizmo_axis_arrow(0, Vector3.RIGHT, Color(0.95, 0.22, 0.22))   # +X Red
+	_create_gizmo_axis_arrow(1, Vector3.UP, Color(0.25, 0.92, 0.30))      # +Y Green
+	_create_gizmo_axis_arrow(2, Vector3.BACK, Color(0.25, 0.52, 0.98))    # +Z Blue
+
+
+func _create_gizmo_axis_arrow(axis_id: int, axis_dir: Vector3, base_color: Color) -> void:
+	var holder := Node3D.new()
+	holder.name = "Axis_%d" % axis_id
+	gizmo_root.add_child(holder)
+
+	# Orient holder so its local +Y points along axis_dir
+	if axis_dir == Vector3.RIGHT:
+		holder.rotation_degrees = Vector3(0.0, 0.0, -90.0)
+	elif axis_dir == Vector3.BACK:
+		holder.rotation_degrees = Vector3(90.0, 0.0, 0.0)
+
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.no_depth_test = true
+	mat.render_priority = 10
+	mat.albedo_color = base_color
+	_gizmo_axis_mats[axis_id] = {
+		"material": mat,
+		"base_color": base_color
+	}
+
+	var shaft_mesh_inst := MeshInstance3D.new()
+	var shaft := CylinderMesh.new()
+	shaft.top_radius = 0.045
+	shaft.bottom_radius = 0.045
+	shaft.height = 1.2
+	shaft.radial_segments = 10
+	shaft.material = mat
+	shaft_mesh_inst.mesh = shaft
+	shaft_mesh_inst.position = Vector3(0.0, 0.6, 0.0)
+	holder.add_child(shaft_mesh_inst)
+
+	var tip_mesh_inst := MeshInstance3D.new()
+	var tip := CylinderMesh.new()
+	tip.top_radius = 0.0
+	tip.bottom_radius = 0.14
+	tip.height = 0.38
+	tip.radial_segments = 12
+	tip.material = mat
+	tip_mesh_inst.mesh = tip
+	tip_mesh_inst.position = Vector3(0.0, 1.35, 0.0)
+	holder.add_child(tip_mesh_inst)
+
+
+func _set_gizmo_highlight(active_axis: int) -> void:
+	for axis_id in _gizmo_axis_mats.keys():
+		var entry: Dictionary = _gizmo_axis_mats[axis_id]
+		var mat: StandardMaterial3D = entry["material"]
+		var base_col: Color = entry["base_color"]
+		if axis_id == active_axis:
+			mat.albedo_color = Color(1.0, 0.95, 0.35) # Bright yellow highlight when hovered/dragged
+		else:
+			mat.albedo_color = base_col
+
+
+func _get_viewport_local_pos(local_pos: Vector2) -> Vector2:
+	if vp_container == null or preview_subviewport == null:
+		return local_pos
+	var c_size := vp_container.size
+	if c_size.x <= 1.0 or c_size.y <= 1.0:
+		return local_pos
+	return Vector2(
+		local_pos.x * float(preview_subviewport.size.x) / c_size.x,
+		local_pos.y * float(preview_subviewport.size.y) / c_size.y
+	)
+
+
+func _point_to_segment_dist_2d(p: Vector2, a: Vector2, b: Vector2) -> float:
+	var ab := b - a
+	var len_sq := ab.length_squared()
+	if len_sq < 0.0001:
+		return p.distance_to(a)
+	var t := clampf((p - a).dot(ab) / len_sq, 0.0, 1.0)
+	var proj := a + ab * t
+	return p.distance_to(proj)
+
+
+func _pick_gizmo_axis_at_screen_pos(screen_pos: Vector2) -> int:
+	if gizmo_root == null or not gizmo_root.visible or preview_camera == null or vp_container == null:
+		return -1
+
+	var origin_3d := gizmo_root.global_position
+	if preview_camera.is_position_behind(origin_3d):
+		return -1
+
+	var vp_pos := _get_viewport_local_pos(screen_pos)
+	var origin_2d := preview_camera.unproject_position(origin_3d)
+
+	var axes: Array[Vector3] = [Vector3.RIGHT, Vector3.UP, Vector3.BACK]
+	var arrow_len := 1.55 * gizmo_root.scale.x
+	var best_axis := -1
+	var best_dist := 14.0 # Hit threshold in subviewport pixels (426x240)
+
+	for axis_id in 3:
+		var tip_3d := origin_3d + axes[axis_id] * arrow_len
+		if preview_camera.is_position_behind(tip_3d):
+			continue
+		var tip_2d := preview_camera.unproject_position(tip_3d)
+		var d := _point_to_segment_dist_2d(vp_pos, origin_2d, tip_2d)
+		if d < best_dist:
+			best_dist = d
+			best_axis = axis_id
+
+	return best_axis
+
+
+func _ray_closest_axis_param(ray_origin: Vector3, ray_dir: Vector3, axis_origin: Vector3, axis_dir: Vector3) -> float:
+	# Closest point parameter s along P(s) = axis_origin + s * axis_dir to ray R(t) = ray_origin + t * ray_dir
+	var w0 := ray_origin - axis_origin
+	var a := ray_dir.dot(ray_dir)
+	var b := ray_dir.dot(axis_dir)
+	var c := axis_dir.dot(axis_dir)
+	var d := ray_dir.dot(w0)
+	var e := axis_dir.dot(w0)
+	var denom := a * c - b * b
+	if absf(denom) < 0.00001:
+		return 0.0
+	return (a * e - b * d) / denom
+
+
+func _get_axis_param_at_screen_pos(screen_pos: Vector2, axis_origin: Vector3, axis_id: int) -> float:
+	var axes: Array[Vector3] = [Vector3.RIGHT, Vector3.UP, Vector3.BACK]
+	var axis_dir := axes[axis_id]
+	var vp_pos := _get_viewport_local_pos(screen_pos)
+	var ray_origin := preview_camera.project_ray_origin(vp_pos)
+	var ray_dir := preview_camera.project_ray_normal(vp_pos)
+	return _ray_closest_axis_param(ray_origin, ray_dir, axis_origin, axis_dir)
+
+
+func _try_select_room_item_at_screen_pos(screen_pos: Vector2) -> bool:
+	if current_mode != Mode.ROOM_EDITOR or preview_camera == null:
+		return false
+	var items: Array = room_cfg.get("items", [])
+	if items.is_empty():
+		return false
+
+	var vp_pos := _get_viewport_local_pos(screen_pos)
+	var ray_origin := preview_camera.project_ray_origin(vp_pos)
+	var ray_dir := preview_camera.project_ray_normal(vp_pos)
+
+	var best_idx := -1
+	var best_t := 99999.0
+
+	for idx in items.size():
+		var it: Dictionary = items[idx]
+		var pos_arr: Array = it.get("position", [0.0, 0.0, 0.0])
+		var center := Vector3(float(pos_arr[0]), float(pos_arr[1]) + 0.6, float(pos_arr[2]))
+		var oc := center - ray_origin
+		var t := oc.dot(ray_dir)
+		if t <= 0.0:
+			continue
+		var closest_pt := ray_origin + ray_dir * t
+		var dist := closest_pt.distance_to(center)
+		if dist < 0.85 and t < best_t:
+			best_t = t
+			best_idx = idx
+
+	if best_idx >= 0:
+		selected_item_idx = best_idx
+		_refresh_room_items_list()
+		_populate_room_item_inspector()
+		_update_room_selection_highlight()
+		return true
+	return false
+
+
 func _build_left_object_panel() -> void:
 	_add_header(left_object_panel, "OBJECT LIBRARY")
 
@@ -377,6 +630,7 @@ func _build_left_object_panel() -> void:
 	left_object_panel.add_child(load_row)
 	obj_saved_dropdown = OptionButton.new()
 	obj_saved_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	obj_saved_dropdown.clip_text = true
 	load_row.add_child(obj_saved_dropdown)
 
 	var load_btn := Button.new()
@@ -400,7 +654,7 @@ func _build_left_object_panel() -> void:
 
 	_add_header(left_object_panel, "MESH PARTS (COMPOSITE)")
 	obj_parts_list = ItemList.new()
-	obj_parts_list.custom_minimum_size = Vector2(0, 110)
+	obj_parts_list.custom_minimum_size = Vector2(0, 100)
 	obj_parts_list.item_selected.connect(func(idx: int):
 		selected_part_idx = idx
 		_populate_object_ui()
@@ -439,13 +693,13 @@ func _build_left_object_panel() -> void:
 		_rebuild_preview()
 	)
 
-	part_model_path_edit = _add_labeled_line_edit(left_object_panel, "Custom Model (res://):", "", func(v: String):
+	part_model_path_edit = _add_labeled_line_edit(left_object_panel, "Model (res://):", "", func(v: String):
 		if _updating_ui: return
 		_current_part()["model_path"] = v
 		_rebuild_preview()
 	)
 
-	var sz_spins := _add_vec3_spins(left_object_panel, "Size (X,Y,Z):", 0.05, 20.0, 0.05, Vector3.ONE, func(v: Vector3):
+	var sz_spins := _add_vec3_spins(left_object_panel, "Size (X, Y, Z):", 0.05, 20.0, 0.05, Vector3.ONE, func(v: Vector3):
 		if _updating_ui: return
 		_current_part()["size"] = [v.x, v.y, v.z]
 		_rebuild_preview()
@@ -460,7 +714,7 @@ func _build_left_object_panel() -> void:
 		_rebuild_preview()
 	)
 
-	var pos_spins := _add_vec3_spins(left_object_panel, "Offset (X,Y,Z):", -15.0, 15.0, 0.05, Vector3(0, 0.5, 0), func(v: Vector3):
+	var pos_spins := _add_vec3_spins(left_object_panel, "Offset (X, Y, Z):", -15.0, 15.0, 0.05, Vector3(0, 0.5, 0), func(v: Vector3):
 		if _updating_ui: return
 		_current_part()["position"] = [v.x, v.y, v.z]
 		_rebuild_preview()
@@ -469,7 +723,7 @@ func _build_left_object_panel() -> void:
 	part_pos_y = pos_spins[1]
 	part_pos_z = pos_spins[2]
 
-	var rot_spins := _add_vec3_spins(left_object_panel, "Rotation Deg:", -360.0, 360.0, 5.0, Vector3.ZERO, func(v: Vector3):
+	var rot_spins := _add_vec3_spins(left_object_panel, "Rotation (Deg):", -360.0, 360.0, 5.0, Vector3.ZERO, func(v: Vector3):
 		if _updating_ui: return
 		_current_part()["rotation"] = [v.x, v.y, v.z]
 		_rebuild_preview()
@@ -499,13 +753,13 @@ func _build_right_object_panel() -> void:
 		_rebuild_preview()
 	)
 
-	obj_mat_custom_tex_edit = _add_labeled_line_edit(right_object_panel, "Custom Image Path:", "", func(v: String):
+	obj_mat_custom_tex_edit = _add_labeled_line_edit(right_object_panel, "Image Path:", "", func(v: String):
 		if _updating_ui: return
 		_current_part_mat()["custom_texture_path"] = v
 		_rebuild_preview()
 	)
 
-	var uv_row := _add_vec2_spins(right_object_panel, "UV Tiling (X,Y):", 0.1, 32.0, 0.25, Vector2(2, 2), func(v: Vector2):
+	var uv_row := _add_vec2_spins(right_object_panel, "UV Tiling (X, Y):", 0.1, 32.0, 0.25, Vector2(2, 2), func(v: Vector2):
 		if _updating_ui: return
 		_current_part_mat()["uv_scale"] = [v.x, v.y]
 		_rebuild_preview()
@@ -519,7 +773,7 @@ func _build_right_object_panel() -> void:
 		_rebuild_preview()
 	)
 
-	var snap_row := _add_vec2_spins(right_object_panel, "Jitter Grid (W,H):", 32.0, 640.0, 8.0, Vector2(213, 120), func(v: Vector2):
+	var snap_row := _add_vec2_spins(right_object_panel, "Jitter Grid (W, H):", 32.0, 640.0, 8.0, Vector2(213, 120), func(v: Vector2):
 		if _updating_ui: return
 		_current_part_mat()["snap_resolution"] = [v.x, v.y]
 		_rebuild_preview()
@@ -527,19 +781,19 @@ func _build_right_object_panel() -> void:
 	obj_mat_snap_x = snap_row[0]
 	obj_mat_snap_y = snap_row[1]
 
-	obj_mat_affine_slider = _add_labeled_slider(right_object_panel, "Affine Texture Warping:", 0.0, 1.0, 0.05, 1.0, func(v: float):
+	obj_mat_affine_slider = _add_labeled_slider(right_object_panel, "Affine Warping:", 0.0, 1.0, 0.05, 1.0, func(v: float):
 		if _updating_ui: return
 		_current_part_mat()["affine_amount"] = v
 		_rebuild_preview()
 	)
 
-	obj_mat_dark_start = _add_labeled_spin(right_object_panel, "Darkness Falloff Start:", 0.5, 40.0, 0.5, 4.0, func(v: float):
+	obj_mat_dark_start = _add_labeled_spin(right_object_panel, "Darkness Start:", 0.5, 40.0, 0.5, 4.0, func(v: float):
 		if _updating_ui: return
 		_current_part_mat()["vertex_darkening_start"] = v
 		_rebuild_preview()
 	)
 
-	obj_mat_dark_end = _add_labeled_spin(right_object_panel, "Darkness Falloff End:", 1.0, 60.0, 0.5, 18.0, func(v: float):
+	obj_mat_dark_end = _add_labeled_spin(right_object_panel, "Darkness End:", 1.0, 60.0, 0.5, 18.0, func(v: float):
 		if _updating_ui: return
 		_current_part_mat()["vertex_darkening_end"] = v
 		_rebuild_preview()
@@ -578,6 +832,7 @@ func _build_left_room_panel() -> void:
 	left_room_panel.add_child(load_row)
 	room_saved_dropdown = OptionButton.new()
 	room_saved_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	room_saved_dropdown.clip_text = true
 	load_row.add_child(room_saved_dropdown)
 
 	var load_btn := Button.new()
@@ -600,11 +855,11 @@ func _build_left_room_panel() -> void:
 	left_room_panel.add_child(save_btn)
 
 	var set_main_btn := Button.new()
-	set_main_btn.text = "Save & Copy to res://scenes/main.tscn"
+	set_main_btn.text = "Save & Export to main.tscn"
 	set_main_btn.pressed.connect(_on_save_room_as_main)
 	left_room_panel.add_child(set_main_btn)
 
-	var dim_spins := _add_vec3_spins(left_room_panel, "Size (W,H,D):", 2.0, 60.0, 0.5, Vector3(12, 4, 24), func(v: Vector3):
+	var dim_spins := _add_vec3_spins(left_room_panel, "Room Size (W, H, D):", 2.0, 60.0, 0.5, Vector3(12, 4, 24), func(v: Vector3):
 		if _updating_ui: return
 		room_cfg["dimensions"] = [v.x, v.y, v.z]
 		_rebuild_preview()
@@ -613,34 +868,40 @@ func _build_left_room_panel() -> void:
 	room_dim_h = dim_spins[1]
 	room_dim_d = dim_spins[2]
 
-	room_ceil_chk = _add_labeled_checkbox(left_room_panel, "Has Ceiling", true, func(on: bool):
+	# Compact 2-column grid for wall/ceiling toggles
+	var wall_grid := GridContainer.new()
+	wall_grid.columns = 2
+	wall_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_room_panel.add_child(wall_grid)
+
+	room_ceil_chk = _add_labeled_checkbox(wall_grid, "Ceiling", true, func(on: bool):
 		if _updating_ui: return
 		room_cfg["has_ceiling"] = on
 		_rebuild_preview()
 	)
-	room_wall_n_chk = _add_labeled_checkbox(left_room_panel, "North Wall (-Z)", true, func(on: bool):
+	room_wall_n_chk = _add_labeled_checkbox(wall_grid, "North Wall (-Z)", true, func(on: bool):
 		if _updating_ui: return
 		room_cfg["wall_north"] = on
 		_rebuild_preview()
 	)
-	room_wall_s_chk = _add_labeled_checkbox(left_room_panel, "South Wall (+Z)", true, func(on: bool):
+	room_wall_s_chk = _add_labeled_checkbox(wall_grid, "South Wall (+Z)", true, func(on: bool):
 		if _updating_ui: return
 		room_cfg["wall_south"] = on
 		_rebuild_preview()
 	)
-	room_wall_w_chk = _add_labeled_checkbox(left_room_panel, "West Wall (-X)", true, func(on: bool):
+	room_wall_w_chk = _add_labeled_checkbox(wall_grid, "West Wall (-X)", true, func(on: bool):
 		if _updating_ui: return
 		room_cfg["wall_west"] = on
 		_rebuild_preview()
 	)
-	room_wall_e_chk = _add_labeled_checkbox(left_room_panel, "East Wall (+X)", true, func(on: bool):
+	room_wall_e_chk = _add_labeled_checkbox(wall_grid, "East Wall (+X)", true, func(on: bool):
 		if _updating_ui: return
 		room_cfg["wall_east"] = on
 		_rebuild_preview()
 	)
 
 	_add_header(left_room_panel, "SILENT HILL FOG & ATMOSPHERE")
-	room_fog_chk = _add_labeled_checkbox(left_room_panel, "Enable Volumetric/Depth Fog", true, func(on: bool):
+	room_fog_chk = _add_labeled_checkbox(left_room_panel, "Enable Depth Fog", true, func(on: bool):
 		if _updating_ui: return
 		room_cfg["fog_enabled"] = on
 		_rebuild_preview()
@@ -658,7 +919,7 @@ func _build_left_room_panel() -> void:
 
 	_add_header(left_room_panel, "ROOM SURFACE MATERIALS")
 	var surf_targets: Array[String] = ["floor_material", "wall_material", "ceiling_material"]
-	room_surface_selector = _add_labeled_option(left_room_panel, "Edit Surface:", surf_targets, func(idx: int):
+	room_surface_selector = _add_labeled_option(left_room_panel, "Surface:", surf_targets, func(idx: int):
 		room_surface_target = surf_targets[idx]
 		_populate_room_surface_ui()
 	)
@@ -668,12 +929,12 @@ func _build_left_room_panel() -> void:
 		room_cfg[room_surface_target]["albedo_color"] = [c.r, c.g, c.b, 1.0]
 		_rebuild_preview()
 	)
-	room_surf_tex_option = _add_labeled_option(left_room_panel, "Surface Texture:", TEXTURE_MODES, func(idx: int):
+	room_surf_tex_option = _add_labeled_option(left_room_panel, "Texture:", TEXTURE_MODES, func(idx: int):
 		if _updating_ui: return
 		room_cfg[room_surface_target]["texture_mode"] = TEXTURE_MODES[idx]
 		_rebuild_preview()
 	)
-	var r_uv := _add_vec2_spins(left_room_panel, "Surface UV Scale:", 0.5, 40.0, 0.5, Vector2(8, 12), func(v: Vector2):
+	var r_uv := _add_vec2_spins(left_room_panel, "UV Scale (X, Y):", 0.5, 40.0, 0.5, Vector2(8, 12), func(v: Vector2):
 		if _updating_ui: return
 		room_cfg[room_surface_target]["uv_scale"] = [v.x, v.y]
 		_rebuild_preview()
@@ -695,15 +956,16 @@ func _build_right_room_panel() -> void:
 	right_room_panel.add_child(place_row)
 	room_catalog_option = OptionButton.new()
 	room_catalog_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	room_catalog_option.clip_text = true
 	place_row.add_child(room_catalog_option)
 
 	var place_btn := Button.new()
-	place_btn.text = "+ Place Object in Room"
+	place_btn.text = "+ Place Object"
 	place_btn.pressed.connect(_on_place_item_in_room)
 	place_row.add_child(place_btn)
 
 	room_items_list = ItemList.new()
-	room_items_list.custom_minimum_size = Vector2(0, 130)
+	room_items_list.custom_minimum_size = Vector2(0, 120)
 	room_items_list.item_selected.connect(func(idx: int):
 		selected_item_idx = idx
 		_populate_room_item_inspector()
@@ -714,13 +976,13 @@ func _build_right_room_panel() -> void:
 	var item_btns := HBoxContainer.new()
 	right_room_panel.add_child(item_btns)
 	var dup_item_btn := Button.new()
-	dup_item_btn.text = "Duplicate Item"
+	dup_item_btn.text = "Duplicate"
 	dup_item_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	dup_item_btn.pressed.connect(_on_duplicate_room_item)
 	item_btns.add_child(dup_item_btn)
 
 	var del_item_btn := Button.new()
-	del_item_btn.text = "Delete Item"
+	del_item_btn.text = "Delete"
 	del_item_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	del_item_btn.pressed.connect(_on_delete_room_item)
 	item_btns.add_child(del_item_btn)
@@ -735,7 +997,7 @@ func _build_right_room_panel() -> void:
 			_rebuild_preview()
 	)
 
-	var ipos := _add_vec3_spins(right_room_panel, "Position (X,Y,Z):", -30.0, 30.0, 0.25, Vector3.ZERO, func(v: Vector3):
+	var ipos := _add_vec3_spins(right_room_panel, "Position (X, Y, Z) [or Drag Arrows]:", -30.0, 30.0, 0.1, Vector3.ZERO, func(v: Vector3):
 		if _updating_ui or selected_item_idx < 0: return
 		var items: Array = room_cfg.get("items", [])
 		if selected_item_idx < items.size():
@@ -746,7 +1008,7 @@ func _build_right_room_panel() -> void:
 	item_pos_y = ipos[1]
 	item_pos_z = ipos[2]
 
-	item_rot_y = _add_labeled_spin(right_room_panel, "Yaw Rotation (Deg):", -360.0, 360.0, 15.0, 0.0, func(v: float):
+	item_rot_y = _add_labeled_spin(right_room_panel, "Yaw Rotation:", -360.0, 360.0, 15.0, 0.0, func(v: float):
 		if _updating_ui or selected_item_idx < 0: return
 		var items: Array = room_cfg.get("items", [])
 		if selected_item_idx < items.size():
@@ -764,7 +1026,7 @@ func _build_right_room_panel() -> void:
 
 	_add_header(right_room_panel, "ROOM LIGHTS")
 	room_lights_list = ItemList.new()
-	room_lights_list.custom_minimum_size = Vector2(0, 80)
+	room_lights_list.custom_minimum_size = Vector2(0, 75)
 	room_lights_list.item_selected.connect(func(idx: int):
 		selected_light_idx = idx
 		_populate_room_light_inspector()
@@ -784,7 +1046,7 @@ func _build_right_room_panel() -> void:
 	del_l_btn.pressed.connect(_on_remove_room_light)
 	l_btns.add_child(del_l_btn)
 
-	var lpos := _add_vec3_spins(right_room_panel, "Light Pos (X,Y,Z):", -30.0, 30.0, 0.25, Vector3(0, 3.4, 0), func(v: Vector3):
+	var lpos := _add_vec3_spins(right_room_panel, "Light Pos (X, Y, Z):", -30.0, 30.0, 0.25, Vector3(0, 3.4, 0), func(v: Vector3):
 		if _updating_ui: return
 		var lights: Array = room_cfg.get("lights", [])
 		if selected_light_idx >= 0 and selected_light_idx < lights.size():
@@ -839,6 +1101,8 @@ func _switch_mode(new_mode: Mode) -> void:
 	if new_mode == Mode.OBJECT_EDITOR:
 		_populate_object_ui()
 	else:
+		if selected_item_idx < 0 and not room_cfg.get("items", []).is_empty():
+			selected_item_idx = 0
 		_populate_room_ui()
 
 	_reset_camera_for_mode()
@@ -869,12 +1133,42 @@ func _update_camera_transform() -> void:
 	)
 	preview_camera.position = _cam_target + dir * _cam_distance
 	preview_camera.look_at(_cam_target, Vector3.UP)
+	_update_gizmo_scale()
+
+
+func _update_gizmo_scale() -> void:
+	if gizmo_root != null and gizmo_root.visible and preview_camera != null:
+		var dist := preview_camera.global_position.distance_to(gizmo_root.global_position)
+		var s := clampf(dist * 0.14, 0.55, 3.2)
+		gizmo_root.scale = Vector3(s, s, s)
 
 
 func _on_preview_gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_LEFT:
-			_orbit_dragging = event.pressed
+			if event.pressed:
+				if current_mode == Mode.ROOM_EDITOR:
+					var hit_axis := _pick_gizmo_axis_at_screen_pos(event.position)
+					if hit_axis >= 0 and selected_item_idx >= 0:
+						_dragging_gizmo_axis = hit_axis
+						_set_gizmo_highlight(hit_axis)
+						var items: Array = room_cfg.get("items", [])
+						var pos_arr: Array = items[selected_item_idx].get("position", [0.0, 0.0, 0.0])
+						_gizmo_drag_start_pos = Vector3(float(pos_arr[0]), float(pos_arr[1]), float(pos_arr[2]))
+						_gizmo_drag_start_param = _get_axis_param_at_screen_pos(event.position, gizmo_root.global_position, hit_axis)
+						var axis_names: Array[String] = ["X", "Y", "Z"]
+						_set_status("Dragging %s-Axis Vector Arrow..." % axis_names[hit_axis])
+						return
+					# Click to select an object in the 3D room if not clicking gizmo
+					if _try_select_room_item_at_screen_pos(event.position):
+						_set_status("Selected '%s'" % str(room_cfg["items"][selected_item_idx].get("instance_name", "Item")))
+				_orbit_dragging = true
+			else:
+				if _dragging_gizmo_axis >= 0:
+					_dragging_gizmo_axis = -1
+					_set_gizmo_highlight(_hovered_gizmo_axis)
+					_set_status("Moved item position.")
+				_orbit_dragging = false
 		elif event.button_index == MOUSE_BUTTON_RIGHT or event.button_index == MOUSE_BUTTON_MIDDLE:
 			_pan_dragging = event.pressed
 		elif event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed:
@@ -883,7 +1177,33 @@ func _on_preview_gui_input(event: InputEvent) -> void:
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed:
 			_cam_distance = minf(50.0, _cam_distance * 1.12)
 			_update_camera_transform()
+
 	elif event is InputEventMouseMotion:
+		if _dragging_gizmo_axis >= 0 and current_mode == Mode.ROOM_EDITOR:
+			var items: Array = room_cfg.get("items", [])
+			if selected_item_idx >= 0 and selected_item_idx < items.size():
+				var drag_origin := _gizmo_drag_start_pos + Vector3(0.0, 0.6, 0.0)
+				var cur_param := _get_axis_param_at_screen_pos(event.position, drag_origin, _dragging_gizmo_axis)
+				var delta_param := cur_param - _gizmo_drag_start_param
+				var axes: Array[Vector3] = [Vector3.RIGHT, Vector3.UP, Vector3.BACK]
+				var new_pos := _gizmo_drag_start_pos + axes[_dragging_gizmo_axis] * delta_param
+				# Snap to 0.05m increments for clean PS1 placement
+				new_pos = Vector3(
+					snappedf(new_pos.x, 0.05),
+					snappedf(new_pos.y, 0.05),
+					snappedf(new_pos.z, 0.05)
+				)
+				items[selected_item_idx]["position"] = [new_pos.x, new_pos.y, new_pos.z]
+				_update_selected_item_node_fast(new_pos)
+				_populate_room_item_inspector()
+			return
+
+		if current_mode == Mode.ROOM_EDITOR and not _orbit_dragging and not _pan_dragging:
+			var hover_axis := _pick_gizmo_axis_at_screen_pos(event.position)
+			if hover_axis != _hovered_gizmo_axis:
+				_hovered_gizmo_axis = hover_axis
+				_set_gizmo_highlight(_hovered_gizmo_axis)
+
 		if _orbit_dragging:
 			_cam_yaw -= event.relative.x * 0.008
 			_cam_pitch = clampf(_cam_pitch - event.relative.y * 0.008, -1.45, 1.45)
@@ -897,16 +1217,29 @@ func _on_preview_gui_input(event: InputEvent) -> void:
 			_update_camera_transform()
 
 
+func _update_selected_item_node_fast(new_pos: Vector3) -> void:
+	# Directly move the live 3D node and gizmo during arrow drag without full scene rebuild
+	if preview_content_holder.get_child_count() > 0:
+		var room_node := preview_content_holder.get_child(0)
+		var items_holder := room_node.get_node_or_null("Items")
+		if items_holder != null and selected_item_idx >= 0 and selected_item_idx < items_holder.get_child_count():
+			var item_node := items_holder.get_child(selected_item_idx)
+			if item_node is Node3D:
+				item_node.position = new_pos
+	_update_room_selection_highlight()
+
+
 func _rebuild_preview() -> void:
 	for child in preview_content_holder.get_children():
 		child.queue_free()
 
 	if current_mode == Mode.OBJECT_EDITOR:
 		preview_selection_box.visible = false
+		if gizmo_root != null:
+			gizmo_root.visible = false
 		var obj_node := SimulacrumBuilder.build_object_node(object_cfg)
 		preview_content_holder.add_child(obj_node)
 	else:
-		# Temporarily open ceiling in preview if camera is looking from high above, or build full room
 		var room_node := SimulacrumBuilder.build_room_node(room_cfg, false)
 		preview_content_holder.add_child(room_node)
 		_update_room_selection_highlight()
@@ -915,15 +1248,24 @@ func _rebuild_preview() -> void:
 func _update_room_selection_highlight() -> void:
 	if current_mode != Mode.ROOM_EDITOR:
 		preview_selection_box.visible = false
+		if gizmo_root != null:
+			gizmo_root.visible = false
 		return
 	var items: Array = room_cfg.get("items", [])
 	if selected_item_idx >= 0 and selected_item_idx < items.size():
 		var item: Dictionary = items[selected_item_idx]
 		var pos_arr: Array = item.get("position", [0.0, 0.0, 0.0])
-		preview_selection_box.position = Vector3(float(pos_arr[0]), float(pos_arr[1]) + 0.6, float(pos_arr[2]))
+		var center_pos := Vector3(float(pos_arr[0]), float(pos_arr[1]) + 0.6, float(pos_arr[2]))
+		preview_selection_box.position = center_pos
 		preview_selection_box.visible = true
+		if gizmo_root != null:
+			gizmo_root.position = center_pos
+			gizmo_root.visible = true
+			_update_gizmo_scale()
 	else:
 		preview_selection_box.visible = false
+		if gizmo_root != null:
+			gizmo_root.visible = false
 
 
 func _current_part() -> Dictionary:
@@ -1244,7 +1586,7 @@ func _on_place_item_in_room() -> void:
 	_refresh_room_items_list()
 	_populate_room_item_inspector()
 	_rebuild_preview()
-	_set_status("Placed '%s' into room." % obj_name)
+	_set_status("Placed '%s' into room. Drag X/Y/Z arrows to move!" % obj_name)
 
 
 func _on_duplicate_room_item() -> void:
@@ -1302,7 +1644,7 @@ func _set_status(msg: String) -> void:
 
 
 # UI Builder Helpers
-func _add_header(parent: VBoxContainer, title: String) -> void:
+func _add_header(parent: Control, title: String) -> void:
 	var sep := HSeparator.new()
 	parent.add_child(sep)
 	var lbl := Label.new()
@@ -1311,12 +1653,13 @@ func _add_header(parent: VBoxContainer, title: String) -> void:
 	parent.add_child(lbl)
 
 
-func _add_labeled_line_edit(parent: VBoxContainer, label_text: String, initial: String, cb: Callable) -> LineEdit:
+func _add_labeled_line_edit(parent: Control, label_text: String, initial: String, cb: Callable) -> LineEdit:
 	var row := HBoxContainer.new()
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	parent.add_child(row)
 	var lbl := Label.new()
 	lbl.text = label_text
-	lbl.custom_minimum_size = Vector2(130, 0)
+	lbl.custom_minimum_size = Vector2(110, 0)
 	row.add_child(lbl)
 	var edit := LineEdit.new()
 	edit.text = initial
@@ -1326,15 +1669,17 @@ func _add_labeled_line_edit(parent: VBoxContainer, label_text: String, initial: 
 	return edit
 
 
-func _add_labeled_option(parent: VBoxContainer, label_text: String, items: Array[String], cb: Callable) -> OptionButton:
+func _add_labeled_option(parent: Control, label_text: String, items: Array[String], cb: Callable) -> OptionButton:
 	var row := HBoxContainer.new()
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	parent.add_child(row)
 	var lbl := Label.new()
 	lbl.text = label_text
-	lbl.custom_minimum_size = Vector2(130, 0)
+	lbl.custom_minimum_size = Vector2(110, 0)
 	row.add_child(lbl)
 	var opt := OptionButton.new()
 	opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	opt.clip_text = true
 	for it in items:
 		opt.add_item(it)
 	opt.item_selected.connect(cb)
@@ -1342,12 +1687,13 @@ func _add_labeled_option(parent: VBoxContainer, label_text: String, items: Array
 	return opt
 
 
-func _add_labeled_spin(parent: VBoxContainer, label_text: String, min_v: float, max_v: float, step_v: float, initial: float, cb: Callable) -> SpinBox:
+func _add_labeled_spin(parent: Control, label_text: String, min_v: float, max_v: float, step_v: float, initial: float, cb: Callable) -> SpinBox:
 	var row := HBoxContainer.new()
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	parent.add_child(row)
 	var lbl := Label.new()
 	lbl.text = label_text
-	lbl.custom_minimum_size = Vector2(145, 0)
+	lbl.custom_minimum_size = Vector2(125, 0)
 	row.add_child(lbl)
 	var sp := SpinBox.new()
 	sp.min_value = min_v
@@ -1360,12 +1706,13 @@ func _add_labeled_spin(parent: VBoxContainer, label_text: String, min_v: float, 
 	return sp
 
 
-func _add_labeled_slider(parent: VBoxContainer, label_text: String, min_v: float, max_v: float, step_v: float, initial: float, cb: Callable) -> HSlider:
+func _add_labeled_slider(parent: Control, label_text: String, min_v: float, max_v: float, step_v: float, initial: float, cb: Callable) -> HSlider:
 	var row := HBoxContainer.new()
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	parent.add_child(row)
 	var lbl := Label.new()
 	lbl.text = label_text
-	lbl.custom_minimum_size = Vector2(145, 0)
+	lbl.custom_minimum_size = Vector2(125, 0)
 	row.add_child(lbl)
 	var sl := HSlider.new()
 	sl.min_value = min_v
@@ -1378,21 +1725,23 @@ func _add_labeled_slider(parent: VBoxContainer, label_text: String, min_v: float
 	return sl
 
 
-func _add_labeled_checkbox(parent: VBoxContainer, label_text: String, initial: bool, cb: Callable) -> CheckBox:
+func _add_labeled_checkbox(parent: Control, label_text: String, initial: bool, cb: Callable) -> CheckBox:
 	var chk := CheckBox.new()
 	chk.text = label_text
 	chk.button_pressed = initial
+	chk.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	chk.toggled.connect(cb)
 	parent.add_child(chk)
 	return chk
 
 
-func _add_labeled_color(parent: VBoxContainer, label_text: String, initial: Color, cb: Callable) -> ColorPickerButton:
+func _add_labeled_color(parent: Control, label_text: String, initial: Color, cb: Callable) -> ColorPickerButton:
 	var row := HBoxContainer.new()
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	parent.add_child(row)
 	var lbl := Label.new()
 	lbl.text = label_text
-	lbl.custom_minimum_size = Vector2(145, 0)
+	lbl.custom_minimum_size = Vector2(125, 0)
 	row.add_child(lbl)
 	var btn := ColorPickerButton.new()
 	btn.color = initial
@@ -1404,12 +1753,13 @@ func _add_labeled_color(parent: VBoxContainer, label_text: String, initial: Colo
 	return btn
 
 
-func _add_vec2_spins(parent: VBoxContainer, label_text: String, min_v: float, max_v: float, step_v: float, initial: Vector2, cb: Callable) -> Array[SpinBox]:
+func _add_vec2_spins(parent: Control, label_text: String, min_v: float, max_v: float, step_v: float, initial: Vector2, cb: Callable) -> Array[SpinBox]:
 	var row := HBoxContainer.new()
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	parent.add_child(row)
 	var lbl := Label.new()
 	lbl.text = label_text
-	lbl.custom_minimum_size = Vector2(120, 0)
+	lbl.custom_minimum_size = Vector2(110, 0)
 	row.add_child(lbl)
 
 	var sx := SpinBox.new()
@@ -1435,15 +1785,17 @@ func _add_vec2_spins(parent: VBoxContainer, label_text: String, min_v: float, ma
 	return [sx, sy]
 
 
-func _add_vec3_spins(parent: VBoxContainer, label_text: String, min_v: float, max_v: float, step_v: float, initial: Vector3, cb: Callable) -> Array[SpinBox]:
+func _add_vec3_spins(parent: Control, label_text: String, min_v: float, max_v: float, step_v: float, initial: Vector3, cb: Callable) -> Array[SpinBox]:
 	var lbl := Label.new()
 	lbl.text = label_text
 	parent.add_child(lbl)
 
 	var row := HBoxContainer.new()
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	parent.add_child(row)
 
 	var sx := SpinBox.new()
+	sx.prefix = "X:"
 	sx.min_value = min_v
 	sx.max_value = max_v
 	sx.step = step_v
@@ -1452,6 +1804,7 @@ func _add_vec3_spins(parent: VBoxContainer, label_text: String, min_v: float, ma
 	row.add_child(sx)
 
 	var sy := SpinBox.new()
+	sy.prefix = "Y:"
 	sy.min_value = min_v
 	sy.max_value = max_v
 	sy.step = step_v
@@ -1460,6 +1813,7 @@ func _add_vec3_spins(parent: VBoxContainer, label_text: String, min_v: float, ma
 	row.add_child(sy)
 
 	var sz := SpinBox.new()
+	sz.prefix = "Z:"
 	sz.min_value = min_v
 	sz.max_value = max_v
 	sz.step = step_v
