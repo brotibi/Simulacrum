@@ -81,12 +81,29 @@ static func default_room_config(room_name: String = "corridor_01") -> Dictionary
 	return {
 		"name": room_name,
 		"dimensions": [10.0, 4.0, 14.0],
+		"has_floor": true,
 		"has_ceiling": true,
+		"floor_thickness": 0.4,
+		"ceiling_thickness": 0.4,
+		"floor_y_offset": 0.0,
+		"ceiling_y_offset": 0.0,
+		"floor_subdivide": 6,
+		"ceiling_subdivide": 6,
 		"wall_north": true,
 		"wall_south": true,
 		"wall_east": true,
 		"wall_west": true,
 		"subdivide": 6,
+		"skybox": {
+			"mode": "procedural_sky", # solid_color, procedural_sky, custom_panorama
+			"background_color": [0.10, 0.11, 0.13],
+			"sky_top_color": [0.06, 0.07, 0.10],
+			"sky_horizon_color": [0.22, 0.24, 0.27],
+			"ground_horizon_color": [0.16, 0.17, 0.19],
+			"ground_bottom_color": [0.05, 0.05, 0.06],
+			"sky_energy": 0.85,
+			"panorama_path": ""
+		},
 		"fog_enabled": true,
 		"fog_color": [0.14, 0.15, 0.16],
 		"fog_density": 0.14,
@@ -464,14 +481,50 @@ static func build_room_node(room_cfg: Dictionary, include_player_and_post: bool 
 	var root := Node3D.new()
 	root.name = str(room_cfg.get("name", "CustomRoom"))
 
-	# Environment & Fog
+	# Environment, Skybox & Fog
 	var world_env := WorldEnvironment.new()
 	world_env.name = "WorldEnvironment"
 	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
+
 	var fog_col_arr: Array = room_cfg.get("fog_color", [0.14, 0.15, 0.16])
 	var fog_col := Color(float(fog_col_arr[0]), float(fog_col_arr[1]), float(fog_col_arr[2]))
-	env.background_color = fog_col
+
+	var sky_cfg: Dictionary = room_cfg.get("skybox", {})
+	var sky_mode: String = str(sky_cfg.get("mode", "procedural_sky"))
+	var sky_energy := float(sky_cfg.get("sky_energy", 0.85))
+
+	if sky_mode == "procedural_sky":
+		env.background_mode = Environment.BG_SKY
+		env.background_energy_multiplier = sky_energy
+		var sky := Sky.new()
+		var proc_mat := ProceduralSkyMaterial.new()
+		var top_arr: Array = sky_cfg.get("sky_top_color", [0.06, 0.07, 0.10])
+		var hor_arr: Array = sky_cfg.get("sky_horizon_color", [0.22, 0.24, 0.27])
+		var ghor_arr: Array = sky_cfg.get("ground_horizon_color", [0.16, 0.17, 0.19])
+		var gbot_arr: Array = sky_cfg.get("ground_bottom_color", [0.05, 0.05, 0.06])
+		proc_mat.sky_top_color = Color(float(top_arr[0]), float(top_arr[1]), float(top_arr[2]))
+		proc_mat.sky_horizon_color = Color(float(hor_arr[0]), float(hor_arr[1]), float(hor_arr[2]))
+		proc_mat.ground_horizon_color = Color(float(ghor_arr[0]), float(ghor_arr[1]), float(ghor_arr[2]))
+		proc_mat.ground_bottom_color = Color(float(gbot_arr[0]), float(gbot_arr[1]), float(gbot_arr[2]))
+		sky.sky_material = proc_mat
+		env.sky = sky
+	elif sky_mode == "custom_panorama":
+		var pano_path: String = str(sky_cfg.get("panorama_path", ""))
+		var pano_tex := load_custom_texture(pano_path)
+		env.background_mode = Environment.BG_SKY
+		env.background_energy_multiplier = sky_energy
+		var sky := Sky.new()
+		var pano_mat := PanoramaSkyMaterial.new()
+		pano_mat.panorama = pano_tex
+		pano_mat.filter = false
+		sky.sky_material = pano_mat
+		env.sky = sky
+	else:
+		env.background_mode = Environment.BG_COLOR
+		var bg_arr: Array = sky_cfg.get("background_color", [fog_col.r, fog_col.g, fog_col.b])
+		env.background_color = Color(float(bg_arr[0]), float(bg_arr[1]), float(bg_arr[2]))
+		env.background_energy_multiplier = sky_energy
+
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	var amb_arr: Array = room_cfg.get("ambient_color", [0.18, 0.19, 0.21])
 	env.ambient_light_color = Color(float(amb_arr[0]), float(amb_arr[1]), float(amb_arr[2]))
@@ -493,26 +546,50 @@ static func build_room_node(room_cfg: Dictionary, include_player_and_post: bool 
 	var w := maxf(float(dims_arr[0]), 2.0)
 	var h := maxf(float(dims_arr[1]), 2.0)
 	var d := maxf(float(dims_arr[2]), 2.0)
-	var subdiv := clampi(int(room_cfg.get("subdivide", 6)), 1, 16)
-	var thickness := 0.4
+	var wall_subdiv := clampi(int(room_cfg.get("subdivide", 6)), 1, 16)
+	var floor_subdiv := clampi(int(room_cfg.get("floor_subdivide", wall_subdiv)), 1, 16)
+	var ceil_subdiv := clampi(int(room_cfg.get("ceiling_subdivide", wall_subdiv)), 1, 16)
+
+	var wall_thickness := 0.4
+	var floor_thickness := maxf(float(room_cfg.get("floor_thickness", 0.4)), 0.05)
+	var ceil_thickness := maxf(float(room_cfg.get("ceiling_thickness", 0.4)), 0.05)
+	var floor_y_off := float(room_cfg.get("floor_y_offset", 0.0))
+	var ceil_y_off := float(room_cfg.get("ceiling_y_offset", 0.0))
 
 	var floor_mat := build_ps1_material(room_cfg.get("floor_material", default_material_config()))
 	var wall_mat := build_ps1_material(room_cfg.get("wall_material", default_material_config()))
 	var ceil_mat := build_ps1_material(room_cfg.get("ceiling_material", default_material_config()))
 
-	_add_room_surface(shell, root, "Floor", Vector3(w, thickness, d), Vector3(0, -thickness * 0.5, 0), floor_mat, subdiv)
+	if bool(room_cfg.get("has_floor", true)):
+		_add_room_surface(
+			shell,
+			root,
+			"Floor",
+			Vector3(w, floor_thickness, d),
+			Vector3(0, -floor_thickness * 0.5 + floor_y_off, 0),
+			floor_mat,
+			floor_subdiv
+		)
 
 	if bool(room_cfg.get("has_ceiling", true)):
-		_add_room_surface(shell, root, "Ceiling", Vector3(w, thickness, d), Vector3(0, h + thickness * 0.5, 0), ceil_mat, subdiv)
+		_add_room_surface(
+			shell,
+			root,
+			"Ceiling",
+			Vector3(w, ceil_thickness, d),
+			Vector3(0, h + ceil_thickness * 0.5 + ceil_y_off, 0),
+			ceil_mat,
+			ceil_subdiv
+		)
 
 	if bool(room_cfg.get("wall_north", true)):
-		_add_room_surface(shell, root, "WallNorth", Vector3(w, h, thickness), Vector3(0, h * 0.5, -d * 0.5 + thickness * 0.5), wall_mat, subdiv)
+		_add_room_surface(shell, root, "WallNorth", Vector3(w, h, wall_thickness), Vector3(0, h * 0.5, -d * 0.5 + wall_thickness * 0.5), wall_mat, wall_subdiv)
 	if bool(room_cfg.get("wall_south", true)):
-		_add_room_surface(shell, root, "WallSouth", Vector3(w, h, thickness), Vector3(0, h * 0.5, d * 0.5 - thickness * 0.5), wall_mat, subdiv)
+		_add_room_surface(shell, root, "WallSouth", Vector3(w, h, wall_thickness), Vector3(0, h * 0.5, d * 0.5 - wall_thickness * 0.5), wall_mat, wall_subdiv)
 	if bool(room_cfg.get("wall_west", true)):
-		_add_room_surface(shell, root, "WallWest", Vector3(thickness, h, d), Vector3(-w * 0.5 + thickness * 0.5, h * 0.5, 0), wall_mat, subdiv)
+		_add_room_surface(shell, root, "WallWest", Vector3(wall_thickness, h, d), Vector3(-w * 0.5 + wall_thickness * 0.5, h * 0.5, 0), wall_mat, wall_subdiv)
 	if bool(room_cfg.get("wall_east", true)):
-		_add_room_surface(shell, root, "WallEast", Vector3(thickness, h, d), Vector3(w * 0.5 - thickness * 0.5, h * 0.5, 0), wall_mat, subdiv)
+		_add_room_surface(shell, root, "WallEast", Vector3(wall_thickness, h, d), Vector3(w * 0.5 - wall_thickness * 0.5, h * 0.5, 0), wall_mat, wall_subdiv)
 
 	# Placed Items
 	var items_holder := Node3D.new()

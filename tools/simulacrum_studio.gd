@@ -22,6 +22,24 @@ const SHAPE_MODES: Array[String] = [
 	"custom_model"
 ]
 
+const SKYBOX_MODES: Array[String] = [
+	"procedural_sky",
+	"solid_color",
+	"custom_panorama"
+]
+
+const ROOM_SURFACE_TARGETS: Array[String] = [
+	"floor_material",
+	"ceiling_material",
+	"wall_material"
+]
+
+const ROOM_SURFACE_LABELS: Array[String] = [
+	"Floor Surface",
+	"Ceiling Surface",
+	"Walls Surface"
+]
+
 enum Mode { OBJECT_EDITOR, ROOM_EDITOR }
 
 var current_mode: Mode = Mode.OBJECT_EDITOR
@@ -113,20 +131,39 @@ var room_name_edit: LineEdit
 var room_dim_w: SpinBox
 var room_dim_h: SpinBox
 var room_dim_d: SpinBox
+var room_floor_chk: CheckBox
 var room_ceil_chk: CheckBox
 var room_wall_n_chk: CheckBox
 var room_wall_s_chk: CheckBox
 var room_wall_e_chk: CheckBox
 var room_wall_w_chk: CheckBox
+var room_floor_thick_spin: SpinBox
+var room_floor_y_spin: SpinBox
+var room_floor_subdiv_spin: SpinBox
+var room_ceil_thick_spin: SpinBox
+var room_ceil_y_spin: SpinBox
+var room_ceil_subdiv_spin: SpinBox
+
+var room_sky_mode_option: OptionButton
+var room_sky_top_color: ColorPickerButton
+var room_sky_horizon_color: ColorPickerButton
+var room_sky_ground_color: ColorPickerButton
+var room_sky_energy_spin: SpinBox
+var room_sky_pano_edit: LineEdit
+
 var room_fog_chk: CheckBox
 var room_fog_color: ColorPickerButton
 var room_fog_density: SpinBox
 var room_surface_selector: OptionButton
 var room_surf_color: ColorPickerButton
 var room_surf_tex_option: OptionButton
+var room_surf_custom_tex_edit: LineEdit
 var room_surf_uv_x: SpinBox
 var room_surf_uv_y: SpinBox
+var room_surf_snap_chk: CheckBox
 var room_surf_affine: HSlider
+var room_surf_dark_start: SpinBox
+var room_surf_dark_end: SpinBox
 
 var room_catalog_option: OptionButton
 var room_items_list: ItemList
@@ -868,12 +905,17 @@ func _build_left_room_panel() -> void:
 	room_dim_h = dim_spins[1]
 	room_dim_d = dim_spins[2]
 
-	# Compact 2-column grid for wall/ceiling toggles
+	# Compact 2-column grid for floor/ceiling/wall toggles
 	var wall_grid := GridContainer.new()
 	wall_grid.columns = 2
 	wall_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	left_room_panel.add_child(wall_grid)
 
+	room_floor_chk = _add_labeled_checkbox(wall_grid, "Floor", true, func(on: bool):
+		if _updating_ui: return
+		room_cfg["has_floor"] = on
+		_rebuild_preview()
+	)
 	room_ceil_chk = _add_labeled_checkbox(wall_grid, "Ceiling", true, func(on: bool):
 		if _updating_ui: return
 		room_cfg["has_ceiling"] = on
@@ -900,27 +942,41 @@ func _build_left_room_panel() -> void:
 		_rebuild_preview()
 	)
 
-	_add_header(left_room_panel, "SILENT HILL FOG & ATMOSPHERE")
-	room_fog_chk = _add_labeled_checkbox(left_room_panel, "Enable Depth Fog", true, func(on: bool):
+	_add_header(left_room_panel, "FLOOR & CEILING GEOMETRY")
+	room_floor_thick_spin = _add_labeled_spin(left_room_panel, "Floor Thickness:", 0.05, 5.0, 0.05, 0.4, func(v: float):
 		if _updating_ui: return
-		room_cfg["fog_enabled"] = on
+		room_cfg["floor_thickness"] = v
 		_rebuild_preview()
 	)
-	room_fog_color = _add_labeled_color(left_room_panel, "Fog Color:", Color(0.14, 0.15, 0.16), func(c: Color):
+	room_floor_y_spin = _add_labeled_spin(left_room_panel, "Floor Y Offset:", -10.0, 10.0, 0.05, 0.0, func(v: float):
 		if _updating_ui: return
-		room_cfg["fog_color"] = [c.r, c.g, c.b]
+		room_cfg["floor_y_offset"] = v
 		_rebuild_preview()
 	)
-	room_fog_density = _add_labeled_spin(left_room_panel, "Fog Density:", 0.0, 0.6, 0.01, 0.14, func(v: float):
+	room_floor_subdiv_spin = _add_labeled_spin(left_room_panel, "Floor Subdivs:", 1, 16, 1, 6, func(v: float):
 		if _updating_ui: return
-		room_cfg["fog_density"] = v
+		room_cfg["floor_subdivide"] = int(v)
+		_rebuild_preview()
+	)
+	room_ceil_thick_spin = _add_labeled_spin(left_room_panel, "Ceiling Thickness:", 0.05, 5.0, 0.05, 0.4, func(v: float):
+		if _updating_ui: return
+		room_cfg["ceiling_thickness"] = v
+		_rebuild_preview()
+	)
+	room_ceil_y_spin = _add_labeled_spin(left_room_panel, "Ceiling Y Offset:", -10.0, 10.0, 0.05, 0.0, func(v: float):
+		if _updating_ui: return
+		room_cfg["ceiling_y_offset"] = v
+		_rebuild_preview()
+	)
+	room_ceil_subdiv_spin = _add_labeled_spin(left_room_panel, "Ceiling Subdivs:", 1, 16, 1, 6, func(v: float):
+		if _updating_ui: return
+		room_cfg["ceiling_subdivide"] = int(v)
 		_rebuild_preview()
 	)
 
-	_add_header(left_room_panel, "ROOM SURFACE MATERIALS")
-	var surf_targets: Array[String] = ["floor_material", "wall_material", "ceiling_material"]
-	room_surface_selector = _add_labeled_option(left_room_panel, "Surface:", surf_targets, func(idx: int):
-		room_surface_target = surf_targets[idx]
+	_add_header(left_room_panel, "FLOOR, CEILING & WALL MATERIALS")
+	room_surface_selector = _add_labeled_option(left_room_panel, "Edit Surface:", ROOM_SURFACE_LABELS, func(idx: int):
+		room_surface_target = ROOM_SURFACE_TARGETS[idx]
 		_populate_room_surface_ui()
 	)
 
@@ -934,6 +990,11 @@ func _build_left_room_panel() -> void:
 		room_cfg[room_surface_target]["texture_mode"] = TEXTURE_MODES[idx]
 		_rebuild_preview()
 	)
+	room_surf_custom_tex_edit = _add_labeled_line_edit(left_room_panel, "Image Path:", "", func(v: String):
+		if _updating_ui: return
+		room_cfg[room_surface_target]["custom_texture_path"] = v
+		_rebuild_preview()
+	)
 	var r_uv := _add_vec2_spins(left_room_panel, "UV Scale (X, Y):", 0.5, 40.0, 0.5, Vector2(8, 12), func(v: Vector2):
 		if _updating_ui: return
 		room_cfg[room_surface_target]["uv_scale"] = [v.x, v.y]
@@ -942,9 +1003,77 @@ func _build_left_room_panel() -> void:
 	room_surf_uv_x = r_uv[0]
 	room_surf_uv_y = r_uv[1]
 
+	room_surf_snap_chk = _add_labeled_checkbox(left_room_panel, "PS1 Vertex Snapping (Jitter)", true, func(on: bool):
+		if _updating_ui: return
+		room_cfg[room_surface_target]["vertex_snap_enabled"] = on
+		_rebuild_preview()
+	)
+
 	room_surf_affine = _add_labeled_slider(left_room_panel, "Affine Warping:", 0.0, 1.0, 0.05, 1.0, func(v: float):
 		if _updating_ui: return
 		room_cfg[room_surface_target]["affine_amount"] = v
+		_rebuild_preview()
+	)
+	room_surf_dark_start = _add_labeled_spin(left_room_panel, "Darkness Start:", 0.5, 40.0, 0.5, 4.0, func(v: float):
+		if _updating_ui: return
+		room_cfg[room_surface_target]["vertex_darkening_start"] = v
+		_rebuild_preview()
+	)
+	room_surf_dark_end = _add_labeled_spin(left_room_panel, "Darkness End:", 1.0, 60.0, 0.5, 18.0, func(v: float):
+		if _updating_ui: return
+		room_cfg[room_surface_target]["vertex_darkening_end"] = v
+		_rebuild_preview()
+	)
+
+	_add_header(left_room_panel, "SKYBOX & SILENT HILL FOG")
+	room_sky_mode_option = _add_labeled_option(left_room_panel, "Skybox Mode:", SKYBOX_MODES, func(idx: int):
+		if _updating_ui: return
+		_ensure_room_skybox_dict()["mode"] = SKYBOX_MODES[idx]
+		_rebuild_preview()
+	)
+	room_sky_top_color = _add_labeled_color(left_room_panel, "Sky / BG Color:", Color(0.06, 0.07, 0.10), func(c: Color):
+		if _updating_ui: return
+		var sky := _ensure_room_skybox_dict()
+		sky["sky_top_color"] = [c.r, c.g, c.b]
+		sky["background_color"] = [c.r, c.g, c.b]
+		_rebuild_preview()
+	)
+	room_sky_horizon_color = _add_labeled_color(left_room_panel, "Horizon Color:", Color(0.22, 0.24, 0.27), func(c: Color):
+		if _updating_ui: return
+		var sky := _ensure_room_skybox_dict()
+		sky["sky_horizon_color"] = [c.r, c.g, c.b]
+		sky["ground_horizon_color"] = [c.r, c.g, c.b]
+		_rebuild_preview()
+	)
+	room_sky_ground_color = _add_labeled_color(left_room_panel, "Ground Color:", Color(0.05, 0.05, 0.06), func(c: Color):
+		if _updating_ui: return
+		_ensure_room_skybox_dict()["ground_bottom_color"] = [c.r, c.g, c.b]
+		_rebuild_preview()
+	)
+	room_sky_energy_spin = _add_labeled_spin(left_room_panel, "Sky Energy:", 0.0, 4.0, 0.05, 0.85, func(v: float):
+		if _updating_ui: return
+		_ensure_room_skybox_dict()["sky_energy"] = v
+		_rebuild_preview()
+	)
+	room_sky_pano_edit = _add_labeled_line_edit(left_room_panel, "Panorama (res://):", "", func(v: String):
+		if _updating_ui: return
+		_ensure_room_skybox_dict()["panorama_path"] = v
+		_rebuild_preview()
+	)
+
+	room_fog_chk = _add_labeled_checkbox(left_room_panel, "Enable Depth Fog", true, func(on: bool):
+		if _updating_ui: return
+		room_cfg["fog_enabled"] = on
+		_rebuild_preview()
+	)
+	room_fog_color = _add_labeled_color(left_room_panel, "Fog Color:", Color(0.14, 0.15, 0.16), func(c: Color):
+		if _updating_ui: return
+		room_cfg["fog_color"] = [c.r, c.g, c.b]
+		_rebuild_preview()
+	)
+	room_fog_density = _add_labeled_spin(left_room_panel, "Fog Density:", 0.0, 0.6, 0.01, 0.14, func(v: float):
+		if _updating_ui: return
+		room_cfg["fog_density"] = v
 		_rebuild_preview()
 	)
 
@@ -1369,6 +1498,21 @@ func _populate_object_ui() -> void:
 	_updating_ui = false
 
 
+func _ensure_room_skybox_dict() -> Dictionary:
+	if not room_cfg.has("skybox") or not (room_cfg["skybox"] is Dictionary):
+		room_cfg["skybox"] = {
+			"mode": "procedural_sky",
+			"background_color": [0.10, 0.11, 0.13],
+			"sky_top_color": [0.06, 0.07, 0.10],
+			"sky_horizon_color": [0.22, 0.24, 0.27],
+			"ground_horizon_color": [0.16, 0.17, 0.19],
+			"ground_bottom_color": [0.05, 0.05, 0.06],
+			"sky_energy": 0.85,
+			"panorama_path": ""
+		}
+	return room_cfg["skybox"]
+
+
 func _populate_room_ui() -> void:
 	_updating_ui = true
 	room_name_edit.text = str(room_cfg.get("name", "silent_corridor"))
@@ -1377,11 +1521,32 @@ func _populate_room_ui() -> void:
 	room_dim_h.value = float(dims[1])
 	room_dim_d.value = float(dims[2])
 
+	room_floor_chk.button_pressed = bool(room_cfg.get("has_floor", true))
 	room_ceil_chk.button_pressed = bool(room_cfg.get("has_ceiling", true))
 	room_wall_n_chk.button_pressed = bool(room_cfg.get("wall_north", true))
 	room_wall_s_chk.button_pressed = bool(room_cfg.get("wall_south", true))
 	room_wall_e_chk.button_pressed = bool(room_cfg.get("wall_east", true))
 	room_wall_w_chk.button_pressed = bool(room_cfg.get("wall_west", true))
+
+	room_floor_thick_spin.value = float(room_cfg.get("floor_thickness", 0.4))
+	room_floor_y_spin.value = float(room_cfg.get("floor_y_offset", 0.0))
+	room_floor_subdiv_spin.value = int(room_cfg.get("floor_subdivide", 6))
+
+	room_ceil_thick_spin.value = float(room_cfg.get("ceiling_thickness", 0.4))
+	room_ceil_y_spin.value = float(room_cfg.get("ceiling_y_offset", 0.0))
+	room_ceil_subdiv_spin.value = int(room_cfg.get("ceiling_subdivide", 6))
+
+	var sky := _ensure_room_skybox_dict()
+	var sky_idx := SKYBOX_MODES.find(str(sky.get("mode", "procedural_sky")))
+	room_sky_mode_option.selected = maxi(0, sky_idx)
+	var top_col: Array = sky.get("sky_top_color", [0.06, 0.07, 0.10])
+	room_sky_top_color.color = Color(float(top_col[0]), float(top_col[1]), float(top_col[2]))
+	var hor_col: Array = sky.get("sky_horizon_color", [0.22, 0.24, 0.27])
+	room_sky_horizon_color.color = Color(float(hor_col[0]), float(hor_col[1]), float(hor_col[2]))
+	var gnd_col: Array = sky.get("ground_bottom_color", [0.05, 0.05, 0.06])
+	room_sky_ground_color.color = Color(float(gnd_col[0]), float(gnd_col[1]), float(gnd_col[2]))
+	room_sky_energy_spin.value = float(sky.get("sky_energy", 0.85))
+	room_sky_pano_edit.text = str(sky.get("panorama_path", ""))
 
 	room_fog_chk.button_pressed = bool(room_cfg.get("fog_enabled", true))
 	var fcol: Array = room_cfg.get("fog_color", [0.14, 0.15, 0.16])
@@ -1398,15 +1563,24 @@ func _populate_room_ui() -> void:
 
 func _populate_room_surface_ui() -> void:
 	_updating_ui = true
-	var mat: Dictionary = room_cfg.get(room_surface_target, SimulacrumBuilder.default_material_config())
+	if not room_cfg.has(room_surface_target) or not (room_cfg[room_surface_target] is Dictionary):
+		room_cfg[room_surface_target] = SimulacrumBuilder.default_material_config()
+	var mat: Dictionary = room_cfg[room_surface_target]
+	var s_idx := ROOM_SURFACE_TARGETS.find(room_surface_target)
+	room_surface_selector.selected = maxi(0, s_idx)
+
 	var col: Array = mat.get("albedo_color", [0.4, 0.4, 0.4, 1.0])
 	room_surf_color.color = Color(float(col[0]), float(col[1]), float(col[2]))
 	var tidx := TEXTURE_MODES.find(str(mat.get("texture_mode", "procedural_concrete")))
 	room_surf_tex_option.selected = maxi(0, tidx)
+	room_surf_custom_tex_edit.text = str(mat.get("custom_texture_path", ""))
 	var uvs: Array = mat.get("uv_scale", [8.0, 8.0])
 	room_surf_uv_x.value = float(uvs[0])
 	room_surf_uv_y.value = float(uvs[1])
+	room_surf_snap_chk.button_pressed = bool(mat.get("vertex_snap_enabled", true))
 	room_surf_affine.value = float(mat.get("affine_amount", 1.0))
+	room_surf_dark_start.value = float(mat.get("vertex_darkening_start", 4.0))
+	room_surf_dark_end.value = float(mat.get("vertex_darkening_end", 18.0))
 	_updating_ui = false
 
 
