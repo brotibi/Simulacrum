@@ -40,7 +40,13 @@ const ROOM_SURFACE_LABELS: Array[String] = [
 	"Walls Surface"
 ]
 
-enum Mode { OBJECT_EDITOR, ROOM_EDITOR }
+const SHADER_PREVIEW_ENVS: Array[String] = [
+	"Sphere + Box + Floor Showcase",
+	"Current Edited Object",
+	"Current Edited Room"
+]
+
+enum Mode { OBJECT_EDITOR, ROOM_EDITOR, SHADER_EDITOR }
 
 var current_mode: Mode = Mode.OBJECT_EDITOR
 var object_cfg: Dictionary = {}
@@ -50,6 +56,16 @@ var room_cfg: Dictionary = {}
 var selected_item_idx: int = -1
 var selected_light_idx: int = 0
 var room_surface_target: String = "floor_material" # floor_material, wall_material, ceiling_material
+
+# Shader Editor state
+var current_shader_name: String = "ps1_surface"
+var shader_preview_env_idx: int = 0
+var shader_preview_tex_mode: String = "procedural_rust"
+var shader_preview_tint: Color = Color(0.85, 0.82, 0.78)
+var shader_live_compile: bool = true
+var _live_shader: Shader
+var _live_shader_mat: ShaderMaterial
+var _saved_post_shader: Shader
 
 var _updating_ui: bool = false
 
@@ -81,13 +97,30 @@ var _turntable_enabled: bool = false
 
 # UI References
 var status_label: Label
+var hint_lbl: Label
 var mode_btn_object: Button
 var mode_btn_room: Button
+var mode_btn_shader: Button
 
 var left_object_panel: VBoxContainer
 var left_room_panel: VBoxContainer
+var left_shader_panel: VBoxContainer
+var right_panel_bg: PanelContainer
 var right_object_panel: VBoxContainer
 var right_room_panel: VBoxContainer
+var shader_code_panel: PanelContainer
+
+# Shader Editor UI controls
+var shader_saved_dropdown: OptionButton
+var shader_name_edit: LineEdit
+var shader_env_option: OptionButton
+var shader_tex_option: OptionButton
+var shader_tint_picker: ColorPickerButton
+var shader_live_chk: CheckBox
+var shader_type_label: Label
+var shader_code_edit: CodeEdit
+var obj_mat_shader_option: OptionButton
+var room_surf_shader_option: OptionButton
 
 # Object UI controls
 var obj_saved_dropdown: OptionButton
@@ -203,13 +236,18 @@ func _ready() -> void:
 	if not room_cfg.get("items", []).is_empty():
 		selected_item_idx = 0
 
+	_live_shader = Shader.new()
+	_live_shader_mat = ShaderMaterial.new()
+	_live_shader_mat.shader = _live_shader
+
 	_build_ui()
 	_refresh_saved_lists()
+	_load_shader_into_editor("ps1_surface")
 	_switch_mode(Mode.OBJECT_EDITOR)
 
 
 func _process(delta: float) -> void:
-	if _turntable_enabled and current_mode == Mode.OBJECT_EDITOR and not _orbit_dragging:
+	if _turntable_enabled and (current_mode == Mode.OBJECT_EDITOR or current_mode == Mode.SHADER_EDITOR) and not _orbit_dragging:
 		_cam_yaw += delta * 0.65
 		_update_camera_transform()
 
@@ -259,6 +297,12 @@ func _build_ui() -> void:
 	mode_btn_room.toggle_mode = true
 	mode_btn_room.pressed.connect(func(): _switch_mode(Mode.ROOM_EDITOR))
 	top_hbox.add_child(mode_btn_room)
+
+	mode_btn_shader = Button.new()
+	mode_btn_shader.text = "3. Shader Editor"
+	mode_btn_shader.toggle_mode = true
+	mode_btn_shader.pressed.connect(func(): _switch_mode(Mode.SHADER_EDITOR))
+	top_hbox.add_child(mode_btn_shader)
 
 	var sep := VSeparator.new()
 	top_hbox.add_child(sep)
@@ -333,6 +377,12 @@ func _build_ui() -> void:
 	left_holder.add_child(left_room_panel)
 	_build_left_room_panel()
 
+	left_shader_panel = VBoxContainer.new()
+	left_shader_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_shader_panel.add_theme_constant_override("separation", 6)
+	left_holder.add_child(left_shader_panel)
+	_build_left_shader_panel()
+
 	# Center 3D Preview Viewport
 	var center_vbox := VBoxContainer.new()
 	center_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -355,14 +405,14 @@ func _build_ui() -> void:
 
 	_setup_preview_3d_scene()
 
-	var hint_lbl := Label.new()
+	hint_lbl = Label.new()
 	hint_lbl.text = "Room Editor: Drag Red(X) / Green(Y) / Blue(Z) Vector Arrows to move item | Left-Click item to select | Left-Drag = Orbit | Right-Drag = Pan | Scroll = Zoom"
 	hint_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint_lbl.add_theme_color_override("font_color", Color(0.68, 0.72, 0.78))
 	center_vbox.add_child(hint_lbl)
 
-	# Right Column (Scrollable Inspector with interior padding)
-	var right_panel_bg := PanelContainer.new()
+	# Right Column (Scrollable Inspector for Object & Room Editors)
+	right_panel_bg = PanelContainer.new()
 	right_panel_bg.custom_minimum_size = Vector2(360, 0)
 	right_panel_bg.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	body_hbox.add_child(right_panel_bg)
@@ -396,6 +446,15 @@ func _build_ui() -> void:
 	right_room_panel.add_theme_constant_override("separation", 6)
 	right_holder.add_child(right_room_panel)
 	_build_right_room_panel()
+
+	# Wide Shader Code Editor Panel (Shown in Mode.SHADER_EDITOR)
+	shader_code_panel = PanelContainer.new()
+	shader_code_panel.custom_minimum_size = Vector2(540, 0)
+	shader_code_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	shader_code_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	shader_code_panel.visible = false
+	body_hbox.add_child(shader_code_panel)
+	_build_shader_code_panel()
 
 
 func _setup_preview_3d_scene() -> void:
@@ -461,7 +520,8 @@ func _setup_preview_3d_scene() -> void:
 	preview_subviewport.add_child(post_layer)
 	preview_post_rect = ColorRect.new()
 	var post_mat := ShaderMaterial.new()
-	post_mat.shader = load(SimulacrumBuilder.PS1_POST_SHADER_PATH)
+	_saved_post_shader = load(SimulacrumBuilder.PS1_POST_SHADER_PATH)
+	post_mat.shader = _saved_post_shader
 	post_mat.set_shader_parameter("color_levels", 32.0)
 	post_mat.set_shader_parameter("dither_strength", 1.0)
 	preview_post_rect.material = post_mat
@@ -778,6 +838,13 @@ func _build_left_object_panel() -> void:
 func _build_right_object_panel() -> void:
 	_add_header(right_object_panel, "PS1 TEXTURE & SHADER EFFECTS")
 
+	obj_mat_shader_option = _add_labeled_option(right_object_panel, "Shader File:", ["ps1_surface"], func(idx: int):
+		if _updating_ui or obj_mat_shader_option.selected < 0: return
+		var s_name := obj_mat_shader_option.get_item_text(idx)
+		_current_part_mat()["shader_path"] = "res://shaders/%s.gdshader" % s_name
+		_rebuild_preview()
+	)
+
 	obj_mat_color = _add_labeled_color(right_object_panel, "Albedo Tint:", Color.WHITE, func(c: Color):
 		if _updating_ui: return
 		_current_part_mat()["albedo_color"] = [c.r, c.g, c.b, c.a]
@@ -978,6 +1045,13 @@ func _build_left_room_panel() -> void:
 	room_surface_selector = _add_labeled_option(left_room_panel, "Edit Surface:", ROOM_SURFACE_LABELS, func(idx: int):
 		room_surface_target = ROOM_SURFACE_TARGETS[idx]
 		_populate_room_surface_ui()
+	)
+
+	room_surf_shader_option = _add_labeled_option(left_room_panel, "Shader File:", ["ps1_surface"], func(idx: int):
+		if _updating_ui or room_surf_shader_option.selected < 0: return
+		var s_name := room_surf_shader_option.get_item_text(idx)
+		room_cfg[room_surface_target]["shader_path"] = "res://shaders/%s.gdshader" % s_name
+		_rebuild_preview()
 	)
 
 	room_surf_color = _add_labeled_color(left_room_panel, "Surface Tint:", Color(0.4, 0.4, 0.4), func(c: Color):
@@ -1211,28 +1285,206 @@ func _build_right_room_panel() -> void:
 	)
 
 
+func _build_left_shader_panel() -> void:
+	_add_header(left_shader_panel, "SHADER LIBRARY")
+
+	var load_row := HBoxContainer.new()
+	left_shader_panel.add_child(load_row)
+	shader_saved_dropdown = OptionButton.new()
+	shader_saved_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	shader_saved_dropdown.clip_text = true
+	load_row.add_child(shader_saved_dropdown)
+
+	var load_btn := Button.new()
+	load_btn.text = "Load"
+	load_btn.pressed.connect(_on_load_selected_shader)
+	load_row.add_child(load_btn)
+
+	shader_name_edit = _add_labeled_line_edit(left_shader_panel, "Shader Name:", "ps1_surface", func(v: String):
+		current_shader_name = v
+	)
+
+	var new_btns := HBoxContainer.new()
+	left_shader_panel.add_child(new_btns)
+	var new_spatial_btn := Button.new()
+	new_spatial_btn.text = "+ New 3D Spatial"
+	new_spatial_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	new_spatial_btn.pressed.connect(_on_new_spatial_shader)
+	new_btns.add_child(new_spatial_btn)
+
+	var new_post_btn := Button.new()
+	new_post_btn.text = "+ New Post-FX"
+	new_post_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	new_post_btn.pressed.connect(_on_new_post_shader)
+	new_btns.add_child(new_post_btn)
+
+	var save_btn := Button.new()
+	save_btn.text = "Save Shader (res://shaders/*.gdshader)"
+	save_btn.pressed.connect(_on_save_shader)
+	left_shader_panel.add_child(save_btn)
+
+	var compile_btn := Button.new()
+	compile_btn.text = "Apply / Compile Preview Now"
+	compile_btn.pressed.connect(_apply_shader_code_to_preview)
+	left_shader_panel.add_child(compile_btn)
+
+	shader_live_chk = _add_labeled_checkbox(left_shader_panel, "Live Compile While Typing", true, func(on: bool):
+		shader_live_compile = on
+	)
+
+	_add_header(left_shader_panel, "3D ENVIRONMENT PREVIEW")
+	shader_env_option = _add_labeled_option(left_shader_panel, "3D Scene:", SHADER_PREVIEW_ENVS, func(idx: int):
+		shader_preview_env_idx = idx
+		_reset_camera_for_mode()
+		_rebuild_preview()
+	)
+
+	shader_tex_option = _add_labeled_option(left_shader_panel, "Test Texture:", TEXTURE_MODES, func(idx: int):
+		shader_preview_tex_mode = TEXTURE_MODES[idx]
+		_update_live_shader_uniforms()
+	)
+	shader_tex_option.selected = maxi(0, TEXTURE_MODES.find(shader_preview_tex_mode))
+
+	shader_tint_picker = _add_labeled_color(left_shader_panel, "Test Tint:", shader_preview_tint, func(c: Color):
+		shader_preview_tint = c
+		_update_live_shader_uniforms()
+	)
+
+	shader_type_label = Label.new()
+	shader_type_label.text = "Detected Type: spatial (3D Surface)"
+	shader_type_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	shader_type_label.add_theme_color_override("font_color", Color(0.68, 0.85, 0.95))
+	left_shader_panel.add_child(shader_type_label)
+
+
+func _build_shader_code_panel() -> void:
+	var margin := MarginContainer.new()
+	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	margin.add_theme_constant_override("margin_left", 8)
+	margin.add_theme_constant_override("margin_right", 8)
+	margin.add_theme_constant_override("margin_top", 8)
+	margin.add_theme_constant_override("margin_bottom", 8)
+	shader_code_panel.add_child(margin)
+
+	var vbox := VBoxContainer.new()
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_theme_constant_override("separation", 6)
+	margin.add_child(vbox)
+
+	var header_hbox := HBoxContainer.new()
+	vbox.add_child(header_hbox)
+
+	var lbl := Label.new()
+	lbl.text = "GODOT SHADER CODE EDITOR (.gdshader)"
+	lbl.add_theme_color_override("font_color", Color(0.90, 0.75, 0.48))
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header_hbox.add_child(lbl)
+
+	var quick_save_btn := Button.new()
+	quick_save_btn.text = "Save .gdshader"
+	quick_save_btn.pressed.connect(_on_save_shader)
+	header_hbox.add_child(quick_save_btn)
+
+	shader_code_edit = CodeEdit.new()
+	shader_code_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	shader_code_edit.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	shader_code_edit.gutters_draw_line_numbers = true
+	shader_code_edit.indent_automatic = true
+	shader_code_edit.auto_brace_completion_enabled = true
+	shader_code_edit.auto_brace_completion_highlight_matching = true
+	shader_code_edit.syntax_highlighter = _create_gdshader_highlighter()
+	shader_code_edit.text_changed.connect(func():
+		if _updating_ui:
+			return
+		if shader_live_compile:
+			_apply_shader_code_to_preview()
+	)
+	vbox.add_child(shader_code_edit)
+
+
+func _create_gdshader_highlighter() -> CodeHighlighter:
+	var hl := CodeHighlighter.new()
+	hl.number_color = Color(0.68, 0.88, 0.65)
+	hl.symbol_color = Color(0.85, 0.85, 0.90)
+	hl.function_color = Color(0.55, 0.80, 0.98)
+	hl.member_variable_color = Color(0.88, 0.78, 0.62)
+
+	var keywords: Array[String] = [
+		"shader_type", "render_mode", "uniform", "varying", "const",
+		"if", "else", "for", "while", "return", "discard", "in", "out", "inout",
+		"spatial", "canvas_item", "sky", "fog", "particles",
+		"true", "false"
+	]
+	for kw in keywords:
+		hl.add_keyword_color(kw, Color(0.96, 0.56, 0.48))
+
+	var types: Array[String] = [
+		"void", "bool", "int", "uint", "float",
+		"vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
+		"mat2", "mat3", "mat4", "sampler2D", "samplerCube"
+	]
+	for tp in types:
+		hl.add_keyword_color(tp, Color(0.48, 0.86, 0.78))
+
+	var builtins: Array[String] = [
+		"VERTEX", "NORMAL", "UV", "UV2", "COLOR", "POSITION",
+		"MODELVIEW_MATRIX", "PROJECTION_MATRIX", "VIEW_MATRIX", "WORLD_MATRIX", "MODEL_MATRIX",
+		"ALBEDO", "ALPHA", "ROUGHNESS", "METALLIC", "EMISSION", "SPECULAR",
+		"SCREEN_UV", "FRAGCOORD", "TIME", "PI", "TAU"
+	]
+	for bi in builtins:
+		hl.add_keyword_color(bi, Color(0.95, 0.82, 0.42))
+
+	hl.add_color_region("//", "", Color(0.50, 0.56, 0.60), true)
+	hl.add_color_region("/*", "*/", Color(0.50, 0.56, 0.60), false)
+	return hl
+
+
 func _switch_mode(new_mode: Mode) -> void:
+	# Restore saved post-process shader when leaving Shader Editor
+	if current_mode == Mode.SHADER_EDITOR and new_mode != Mode.SHADER_EDITOR and preview_post_rect != null:
+		var post_mat := preview_post_rect.material as ShaderMaterial
+		if post_mat != null and _saved_post_shader != null:
+			post_mat.shader = _saved_post_shader
+
 	current_mode = new_mode
 	mode_btn_object.button_pressed = (new_mode == Mode.OBJECT_EDITOR)
 	mode_btn_room.button_pressed = (new_mode == Mode.ROOM_EDITOR)
+	mode_btn_shader.button_pressed = (new_mode == Mode.SHADER_EDITOR)
 
 	left_object_panel.visible = (new_mode == Mode.OBJECT_EDITOR)
 	right_object_panel.visible = (new_mode == Mode.OBJECT_EDITOR)
 	left_room_panel.visible = (new_mode == Mode.ROOM_EDITOR)
 	right_room_panel.visible = (new_mode == Mode.ROOM_EDITOR)
+	left_shader_panel.visible = (new_mode == Mode.SHADER_EDITOR)
+
+	right_panel_bg.visible = (new_mode != Mode.SHADER_EDITOR)
+	shader_code_panel.visible = (new_mode == Mode.SHADER_EDITOR)
 
 	var grid := preview_root_3d.get_node_or_null("ObjectFloorGrid")
 	if grid != null:
 		grid.visible = (new_mode == Mode.OBJECT_EDITOR)
-	preview_key_light.visible = (new_mode == Mode.OBJECT_EDITOR)
+	preview_key_light.visible = (new_mode == Mode.OBJECT_EDITOR or (new_mode == Mode.SHADER_EDITOR and shader_preview_env_idx != 2))
+
+	if hint_lbl != null:
+		if new_mode == Mode.SHADER_EDITOR:
+			hint_lbl.text = "Shader Editor: Edit .gdshader code on the right to preview live on the 3D scene | Left-Drag = Orbit | Right-Drag = Pan | Scroll = Zoom"
+		elif new_mode == Mode.ROOM_EDITOR:
+			hint_lbl.text = "Room Editor: Drag Red(X) / Green(Y) / Blue(Z) Vector Arrows to move item | Left-Click item to select | Left-Drag = Orbit | Right-Drag = Pan | Scroll = Zoom"
+		else:
+			hint_lbl.text = "Object Editor: Left-Drag = Orbit | Right-Drag = Pan | Scroll = Zoom | Toggle Turntable in top bar"
 
 	_refresh_saved_lists()
 	if new_mode == Mode.OBJECT_EDITOR:
 		_populate_object_ui()
-	else:
+	elif new_mode == Mode.ROOM_EDITOR:
 		if selected_item_idx < 0 and not room_cfg.get("items", []).is_empty():
 			selected_item_idx = 0
 		_populate_room_ui()
+	else:
+		_populate_shader_ui()
 
 	_reset_camera_for_mode()
 	_rebuild_preview()
@@ -1244,6 +1496,17 @@ func _reset_camera_for_mode() -> void:
 		_cam_yaw = -0.55
 		_cam_pitch = -0.32
 		_cam_distance = 3.4
+	elif current_mode == Mode.SHADER_EDITOR:
+		if shader_preview_env_idx == 2:
+			_cam_target = Vector3(0.0, 1.5, 0.0)
+			_cam_yaw = -0.35
+			_cam_pitch = -0.25
+			_cam_distance = 8.5
+		else:
+			_cam_target = Vector3(0.0, 0.85, 0.0)
+			_cam_yaw = -0.55
+			_cam_pitch = -0.30
+			_cam_distance = 3.8
 	else:
 		_cam_target = Vector3(0.0, 1.5, 0.0)
 		_cam_yaw = -0.45
@@ -1368,10 +1631,93 @@ func _rebuild_preview() -> void:
 			gizmo_root.visible = false
 		var obj_node := SimulacrumBuilder.build_object_node(object_cfg)
 		preview_content_holder.add_child(obj_node)
+	elif current_mode == Mode.SHADER_EDITOR:
+		preview_selection_box.visible = false
+		if gizmo_root != null:
+			gizmo_root.visible = false
+		var grid := preview_root_3d.get_node_or_null("ObjectFloorGrid")
+		if grid != null:
+			grid.visible = (shader_preview_env_idx == 1)
+		preview_key_light.visible = (shader_preview_env_idx != 2)
+		var showcase := _build_shader_preview_environment()
+		preview_content_holder.add_child(showcase)
+		_apply_shader_code_to_preview()
 	else:
 		var room_node := SimulacrumBuilder.build_room_node(room_cfg, false)
 		preview_content_holder.add_child(room_node)
 		_update_room_selection_highlight()
+
+
+func _build_shader_preview_environment() -> Node3D:
+	if shader_preview_env_idx == 1:
+		return SimulacrumBuilder.build_object_node(object_cfg)
+	elif shader_preview_env_idx == 2:
+		return SimulacrumBuilder.build_room_node(room_cfg, false)
+
+	# Default 3D Showcase Environment: PS1 floor + subdivided sphere + beveled box + warm point light + fog
+	var env_root := Node3D.new()
+	env_root.name = "ShaderShowcase3D"
+
+	var world_env := WorldEnvironment.new()
+	var env := Environment.new()
+	env.background_mode = Environment.BG_SKY
+	var sky := Sky.new()
+	var proc_sky := ProceduralSkyMaterial.new()
+	proc_sky.sky_top_color = Color(0.06, 0.08, 0.12)
+	proc_sky.sky_horizon_color = Color(0.20, 0.22, 0.26)
+	proc_sky.ground_horizon_color = Color(0.14, 0.15, 0.17)
+	proc_sky.ground_bottom_color = Color(0.05, 0.05, 0.06)
+	sky.sky_material = proc_sky
+	env.sky = sky
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(0.22, 0.23, 0.26)
+	env.ambient_light_energy = 0.7
+	env.fog_enabled = true
+	env.fog_light_color = Color(0.14, 0.15, 0.17)
+	env.fog_density = 0.06
+	world_env.environment = env
+	env_root.add_child(world_env)
+
+	var floor_mesh := MeshInstance3D.new()
+	floor_mesh.name = "ShowcaseFloor"
+	var plane := PlaneMesh.new()
+	plane.size = Vector2(10.0, 10.0)
+	plane.subdivide_width = 8
+	plane.subdivide_depth = 8
+	floor_mesh.mesh = plane
+	env_root.add_child(floor_mesh)
+
+	var sphere_inst := MeshInstance3D.new()
+	sphere_inst.name = "ShowcaseSphere"
+	var sphere := SphereMesh.new()
+	sphere.radius = 0.65
+	sphere.height = 1.3
+	sphere.radial_segments = 16
+	sphere.rings = 10
+	sphere_inst.mesh = sphere
+	sphere_inst.position = Vector3(-0.85, 0.75, 0.0)
+	env_root.add_child(sphere_inst)
+
+	var box_inst := MeshInstance3D.new()
+	box_inst.name = "ShowcaseBox"
+	var box := BoxMesh.new()
+	box.size = Vector3(1.05, 1.05, 1.05)
+	box.subdivide_width = 4
+	box.subdivide_height = 4
+	box.subdivide_depth = 4
+	box_inst.mesh = box
+	box_inst.position = Vector3(0.85, 0.6, 0.0)
+	box_inst.rotation_degrees = Vector3(0.0, 28.0, 0.0)
+	env_root.add_child(box_inst)
+
+	var warm_light := OmniLight3D.new()
+	warm_light.position = Vector3(0.0, 2.4, 1.6)
+	warm_light.light_color = Color(0.95, 0.82, 0.60)
+	warm_light.light_energy = 1.35
+	warm_light.omni_range = 9.0
+	env_root.add_child(warm_light)
+
+	return env_root
 
 
 func _update_room_selection_highlight() -> void:
@@ -1425,6 +1771,22 @@ func _refresh_saved_lists() -> void:
 	for r in rooms:
 		room_saved_dropdown.add_item(r)
 
+	var shaders := SimulacrumBuilder.list_saved_shaders()
+	shader_saved_dropdown.clear()
+	obj_mat_shader_option.clear()
+	room_surf_shader_option.clear()
+	for s in shaders:
+		shader_saved_dropdown.add_item(s)
+		# Only list spatial shaders (or non-post-process shaders) in surface shader dropdowns
+		var code := SimulacrumBuilder.load_shader_code(s)
+		if not code.contains("shader_type canvas_item"):
+			obj_mat_shader_option.add_item(s)
+			room_surf_shader_option.add_item(s)
+	if obj_mat_shader_option.item_count == 0:
+		obj_mat_shader_option.add_item("ps1_surface")
+	if room_surf_shader_option.item_count == 0:
+		room_surf_shader_option.add_item("ps1_surface")
+
 
 func _refresh_parts_list_labels() -> void:
 	obj_parts_list.clear()
@@ -1468,6 +1830,10 @@ func _populate_object_ui() -> void:
 	part_collision_chk.button_pressed = bool(part.get("collision", true))
 
 	var mat := _current_part_mat()
+	var s_path := str(mat.get("shader_path", SimulacrumBuilder.PS1_SURFACE_SHADER_PATH))
+	var s_base := s_path.get_file().trim_suffix(".gdshader")
+	_select_option_by_text(obj_mat_shader_option, s_base)
+
 	var col: Array = mat.get("albedo_color", [0.75, 0.75, 0.75, 1.0])
 	obj_mat_color.color = Color(float(col[0]), float(col[1]), float(col[2]), 1.0)
 
@@ -1568,6 +1934,10 @@ func _populate_room_surface_ui() -> void:
 	var mat: Dictionary = room_cfg[room_surface_target]
 	var s_idx := ROOM_SURFACE_TARGETS.find(room_surface_target)
 	room_surface_selector.selected = maxi(0, s_idx)
+
+	var s_path := str(mat.get("shader_path", SimulacrumBuilder.PS1_SURFACE_SHADER_PATH))
+	var s_base := s_path.get_file().trim_suffix(".gdshader")
+	_select_option_by_text(room_surf_shader_option, s_base)
 
 	var col: Array = mat.get("albedo_color", [0.4, 0.4, 0.4, 1.0])
 	room_surf_color.color = Color(float(col[0]), float(col[1]), float(col[2]))
@@ -1810,6 +2180,204 @@ func _on_remove_room_light() -> void:
 		_refresh_room_lights_list()
 		_populate_room_light_inspector()
 		_rebuild_preview()
+
+
+func _select_option_by_text(opt: OptionButton, target_text: String) -> void:
+	for i in opt.item_count:
+		if opt.get_item_text(i) == target_text:
+			opt.selected = i
+			return
+	if opt.item_count > 0:
+		opt.selected = 0
+
+
+# Actions: Shader Editor
+func _populate_shader_ui() -> void:
+	_updating_ui = true
+	shader_name_edit.text = current_shader_name
+	_select_option_by_text(shader_saved_dropdown, current_shader_name)
+	shader_env_option.selected = clampi(shader_preview_env_idx, 0, SHADER_PREVIEW_ENVS.size() - 1)
+	shader_tex_option.selected = maxi(0, TEXTURE_MODES.find(shader_preview_tex_mode))
+	shader_tint_picker.color = shader_preview_tint
+	shader_live_chk.button_pressed = shader_live_compile
+	_updating_ui = false
+
+
+func _load_shader_into_editor(shader_name: String) -> void:
+	var code := SimulacrumBuilder.load_shader_code(shader_name)
+	if code.is_empty():
+		return
+	current_shader_name = shader_name
+	_updating_ui = true
+	if shader_name_edit != null:
+		shader_name_edit.text = shader_name
+	if shader_code_edit != null:
+		shader_code_edit.text = code
+	if shader_saved_dropdown != null:
+		_select_option_by_text(shader_saved_dropdown, shader_name)
+	_updating_ui = false
+	if current_mode == Mode.SHADER_EDITOR:
+		_apply_shader_code_to_preview()
+
+
+func _on_load_selected_shader() -> void:
+	if shader_saved_dropdown.selected < 0:
+		return
+	var s_name := shader_saved_dropdown.get_item_text(shader_saved_dropdown.selected)
+	_load_shader_into_editor(s_name)
+	_set_status("Loaded shader 'res://shaders/%s.gdshader'" % s_name)
+
+
+func _on_new_spatial_shader() -> void:
+	current_shader_name = "custom_ps1_surface"
+	var template := """shader_type spatial;
+render_mode skip_vertex_transform, vertex_lighting, specular_disabled;
+
+uniform vec4 albedo_color : source_color = vec4(1.0);
+uniform sampler2D albedo_texture : source_color, filter_nearest, repeat_enable;
+uniform vec2 uv_scale = vec2(2.0, 2.0);
+uniform vec2 snap_resolution = vec2(213.0, 120.0);
+uniform float wave_speed = 2.0;
+uniform float wave_amount = 0.04;
+
+varying vec2 affine_uv;
+varying float affine_w;
+
+void vertex() {
+	vec3 displaced = VERTEX;
+	displaced.y += sin(TIME * wave_speed + VERTEX.x * 3.0 + VERTEX.z * 3.0) * wave_amount;
+
+	vec4 view_pos = MODELVIEW_MATRIX * vec4(displaced, 1.0);
+	vec4 clip_pos = PROJECTION_MATRIX * view_pos;
+
+	if (clip_pos.w > 0.0001) {
+		vec2 ndc = clip_pos.xy / clip_pos.w;
+		clip_pos.xy = (floor(ndc * snap_resolution + 0.5) / snap_resolution) * clip_pos.w;
+	}
+
+	POSITION = clip_pos;
+	VERTEX = view_pos.xyz;
+	NORMAL = normalize((MODELVIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+
+	vec2 scaled_uv = UV * uv_scale;
+	float w = max(clip_pos.w, 0.001);
+	affine_uv = scaled_uv * w;
+	affine_w = w;
+}
+
+void fragment() {
+	vec2 uv = affine_uv / affine_w;
+	vec4 tex = texture(albedo_texture, uv);
+	ALBEDO = tex.rgb * albedo_color.rgb * COLOR.rgb;
+	ROUGHNESS = 1.0;
+}
+"""
+	_updating_ui = true
+	shader_name_edit.text = current_shader_name
+	shader_code_edit.text = template
+	_updating_ui = false
+	_apply_shader_code_to_preview()
+	_set_status("Created new 3D spatial shader template.")
+
+
+func _on_new_post_shader() -> void:
+	current_shader_name = "custom_post_fx"
+	var template := """shader_type canvas_item;
+
+uniform sampler2D screen_texture : hint_screen_texture, repeat_disable, filter_nearest;
+uniform float color_levels : hint_range(4.0, 64.0) = 24.0;
+uniform float scanline_strength : hint_range(0.0, 1.0) = 0.18;
+
+void fragment() {
+	vec3 col = texture(screen_texture, SCREEN_UV).rgb;
+	float scan = sin(FRAGCOORD.y * 3.14159) * scanline_strength;
+	col = clamp(col - scan, 0.0, 1.0);
+	col = floor(col * color_levels + 0.5) / color_levels;
+	COLOR = vec4(col, 1.0);
+}
+"""
+	_updating_ui = true
+	shader_name_edit.text = current_shader_name
+	shader_code_edit.text = template
+	_updating_ui = false
+	_apply_shader_code_to_preview()
+	_set_status("Created new post-process (canvas_item) shader template.")
+
+
+func _on_save_shader() -> void:
+	if shader_code_edit == null:
+		return
+	var saved_path := SimulacrumBuilder.save_shader_code(current_shader_name, shader_code_edit.text)
+	current_shader_name = saved_path.get_file().trim_suffix(".gdshader")
+	if saved_path == SimulacrumBuilder.PS1_POST_SHADER_PATH:
+		_saved_post_shader = SimulacrumBuilder.load_shader_resource(saved_path)
+	_refresh_saved_lists()
+	_populate_shader_ui()
+	_apply_shader_code_to_preview()
+	_set_status("Saved shader -> %s" % saved_path)
+
+
+func _update_live_shader_uniforms() -> void:
+	if _live_shader_mat == null:
+		return
+	var tex := SimulacrumBuilder.get_procedural_texture(shader_preview_tex_mode)
+	_live_shader_mat.set_shader_parameter("albedo_texture", tex)
+	_live_shader_mat.set_shader_parameter("albedo_color", shader_preview_tint)
+	_live_shader_mat.set_shader_parameter("uv_scale", Vector2(2.0, 2.0))
+	_live_shader_mat.set_shader_parameter("snap_resolution", Vector2(213.0, 120.0))
+	_live_shader_mat.set_shader_parameter("vertex_snap_enabled", true)
+	_live_shader_mat.set_shader_parameter("affine_amount", 1.0)
+	_live_shader_mat.set_shader_parameter("vertex_darkening_start", 4.0)
+	_live_shader_mat.set_shader_parameter("vertex_darkening_end", 18.0)
+
+
+func _apply_material_override_to_preview_tree(node: Node, mat: Material) -> void:
+	if node is MeshInstance3D:
+		node.material_override = mat
+	for child in node.get_children():
+		_apply_material_override_to_preview_tree(child, mat)
+
+
+func _apply_shader_code_to_preview() -> void:
+	if shader_code_edit == null or _live_shader == null:
+		return
+	var code := shader_code_edit.text
+	var is_post := code.contains("shader_type canvas_item")
+
+	if shader_type_label != null:
+		if is_post:
+			shader_type_label.text = "Detected Type: canvas_item (Fullscreen Post-Process FX)"
+		else:
+			shader_type_label.text = "Detected Type: spatial (Applied to 3D Environment Meshes)"
+
+	_live_shader.code = code
+	_update_live_shader_uniforms()
+
+	if current_mode != Mode.SHADER_EDITOR:
+		return
+
+	var post_mat := preview_post_rect.material as ShaderMaterial if preview_post_rect != null else null
+
+	if is_post:
+		# Clear 3D mesh material overrides so standard PS1 surfaces render underneath the post-FX shader
+		for child in preview_content_holder.get_children():
+			if child.name == "ShaderShowcase3D":
+				var def_mat := SimulacrumBuilder.build_ps1_material({
+					"texture_mode": shader_preview_tex_mode,
+					"albedo_color": [shader_preview_tint.r, shader_preview_tint.g, shader_preview_tint.b, 1.0],
+					"uv_scale": [2.0, 2.0]
+				})
+				_apply_material_override_to_preview_tree(child, def_mat)
+			else:
+				_apply_material_override_to_preview_tree(child, null)
+		if post_mat != null:
+			preview_post_rect.visible = true
+			post_mat.shader = _live_shader
+	else:
+		if post_mat != null and _saved_post_shader != null:
+			post_mat.shader = _saved_post_shader
+		for child in preview_content_holder.get_children():
+			_apply_material_override_to_preview_tree(child, _live_shader_mat)
 
 
 func _set_status(msg: String) -> void:

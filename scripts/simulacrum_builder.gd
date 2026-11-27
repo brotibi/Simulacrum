@@ -5,6 +5,7 @@ const OBJECTS_JSON_DIR := "res://content/objects"
 const OBJECTS_SCENE_DIR := "res://scenes/objects"
 const ROOMS_JSON_DIR := "res://content/rooms"
 const ROOMS_SCENE_DIR := "res://scenes/rooms"
+const SHADERS_DIR := "res://shaders"
 
 const PS1_SURFACE_SHADER_PATH := "res://shaders/ps1_surface.gdshader"
 const PS1_POST_SHADER_PATH := "res://shaders/ps1_post_process.gdshader"
@@ -13,12 +14,13 @@ static var _tex_cache: Dictionary = {}
 
 
 static func ensure_directories() -> void:
-	for dir_path in [OBJECTS_JSON_DIR, OBJECTS_SCENE_DIR, ROOMS_JSON_DIR, ROOMS_SCENE_DIR, "res://assets/textures", "res://assets/models"]:
+	for dir_path in [OBJECTS_JSON_DIR, OBJECTS_SCENE_DIR, ROOMS_JSON_DIR, ROOMS_SCENE_DIR, SHADERS_DIR, "res://assets/textures", "res://assets/models"]:
 		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir_path))
 
 
 static func default_material_config() -> Dictionary:
 	return {
+		"shader_path": PS1_SURFACE_SHADER_PATH,
 		"albedo_color": [0.72, 0.70, 0.66, 1.0],
 		"texture_mode": "procedural_concrete",
 		"custom_texture_path": "",
@@ -216,9 +218,25 @@ static func load_custom_texture(path: String) -> Texture2D:
 	return get_procedural_texture("none")
 
 
+static func load_shader_resource(shader_path: String) -> Shader:
+	if not shader_path.is_empty():
+		if ResourceLoader.exists(shader_path):
+			var s := load(shader_path)
+			if s is Shader:
+				return s
+		var abs_path := ProjectSettings.globalize_path(shader_path) if shader_path.begins_with("res://") else shader_path
+		if FileAccess.file_exists(abs_path):
+			var sh := Shader.new()
+			sh.code = FileAccess.get_file_as_string(abs_path)
+			sh.resource_path = shader_path
+			return sh
+	return load(PS1_SURFACE_SHADER_PATH)
+
+
 static func build_ps1_material(mat_cfg: Dictionary) -> ShaderMaterial:
 	var mat := ShaderMaterial.new()
-	mat.shader = load(PS1_SURFACE_SHADER_PATH)
+	var s_path := str(mat_cfg.get("shader_path", PS1_SURFACE_SHADER_PATH))
+	mat.shader = load_shader_resource(s_path)
 
 	var col_arr: Array = mat_cfg.get("albedo_color", [0.75, 0.75, 0.75, 1.0])
 	var col := Color(
@@ -783,6 +801,48 @@ static func list_saved_rooms() -> Array[String]:
 		dir.list_dir_end()
 	results.sort()
 	return results
+
+
+static func list_saved_shaders() -> Array[String]:
+	ensure_directories()
+	var results: Array[String] = []
+	var dir := DirAccess.open(SHADERS_DIR)
+	if dir != null:
+		dir.list_dir_begin()
+		var fname := dir.get_next()
+		while not fname.is_empty():
+			if not dir.current_is_dir() and fname.ends_with(".gdshader"):
+				results.append(fname.trim_suffix(".gdshader"))
+			fname = dir.get_next()
+		dir.list_dir_end()
+	results.sort()
+	return results
+
+
+static func load_shader_code(shader_name: String) -> String:
+	var clean := shader_name.trim_suffix(".gdshader")
+	var path := "%s/%s.gdshader" % [SHADERS_DIR, clean]
+	if FileAccess.file_exists(path):
+		return FileAccess.get_file_as_string(path)
+	return ""
+
+
+static func save_shader_code(shader_name: String, code: String) -> String:
+	ensure_directories()
+	var clean := shader_name.strip_edges().trim_suffix(".gdshader").to_snake_case()
+	if clean.is_empty():
+		clean = "custom_shader"
+	var path := "%s/%s.gdshader" % [SHADERS_DIR, clean]
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f != null:
+		f.store_string(code)
+		f.close()
+	# Reload cached Shader resource if already loaded so objects/rooms reflect saved edits immediately
+	if ResourceLoader.exists(path):
+		var loaded := load(path)
+		if loaded is Shader:
+			loaded.code = code
+	return path
 
 
 static func ensure_starter_presets() -> void:

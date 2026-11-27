@@ -40,10 +40,16 @@ From either Arch Linux or macOS Apple Silicon:
    - Saves both re-editable JSON configs (`content/objects/<name>.json`) and ready-to-use Godot scenes (`scenes/objects/<name>.tscn`).
 
 2. **Room Editor (`2. Room Editor`)**:
-   - Configure room dimensions (`Width`, `Height`, `Depth`), toggle ceiling and walls (`North`, `South`, `East`, `West`), and customize Silent Hill depth fog and surface materials (`floor_material`, `wall_material`, `ceiling_material`).
-   - Place saved objects from your Object Library into the room, duplicate/delete items, and modify their 3D position, rotation, and scale with live 3D preview and selection highlighting.
+   - Configure room dimensions (`Width`, `Height`, `Depth`), toggle floor, ceiling, and walls (`North`, `South`, `East`, `West`), customize floor/ceiling thickness, Y-offsets, and PS1 subdivisions, and configure skyboxes (`procedural_sky`, `solid_color`, `custom_panorama`) and Silent Hill depth fog.
+   - Place saved objects from your Object Library into the room, duplicate/delete items, and modify their 3D position (via SpinBoxes or interactive 3D RGB X/Y/Z vector arrows), rotation, and scale with live 3D preview.
    - Add and position room lights (`OmniLight3D`) with custom color, energy, and range.
    - Saves both `content/rooms/<name>.json` and `scenes/rooms/<name>.tscn` (or one-click export directly to `res://scenes/main.tscn`).
+
+3. **Shader Editor (`3. Shader Editor`)**:
+   - Built-in `.gdshader` code editor (`CodeEdit`) with line numbers, auto-indentation, brace matching, and Godot shader syntax highlighting.
+   - Load existing shaders (`ps1_surface`, `ps1_post_process`, or custom shaders), start from `+ New 3D Spatial` or `+ New Post-FX` templates, and save directly to `res://shaders/<name>.gdshader`.
+   - Live 3D environment preview (`Sphere + Box + Floor Showcase`, `Current Edited Object`, or `Current Edited Room`) that compiles and previews both `spatial` 3D surface shaders and `canvas_item` fullscreen post-processing shaders in real time.
+   - Saved spatial shaders automatically appear in the **Shader File** dropdowns inside both the Object Editor and Room Editor.
 
 ---
 
